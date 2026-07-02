@@ -53,7 +53,6 @@ podman run -d \\
   -e TS_AUTHKEY="\$(cat "\$TS_AUTHKEY_FILE")" \\
   -e TS_STATE_DIR=/var/lib/tailscale \\
   -e TS_HOSTNAME="$service" \\
-  -e TS_EXTRA_ARGS="--hostname=$service" \\
   $ts_image
 
 echo "Waiting for Tailscale..."
