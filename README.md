@@ -16,7 +16,7 @@ TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs
 ```
 
 This installs podman, pulls the Podscale controller image, and enrolls it
-on your tailnet. Then open **`https://homepod.<your-tailnet>.ts.net`**
+on your tailnet. Then open **`https://podscale.<your-tailnet>.ts.net`**
 and install services from the catalog with a click.
 
 ## Quick start — CLI wizard (no resident controller)
@@ -95,7 +95,7 @@ Optional fields: `"command"` (appended after the image) and
 
 Debian/Ubuntu hosts with podman (auto-installed). Runs happily inside
 VMs and container-VMs (tested in apple/container guests — see
-`bootstrap-homepod.sh` for the MTU and boot-persistence handling that
+`bootstrap-podscale.sh` for the MTU and boot-persistence handling that
 nested hosts need). Everything else: PRs welcome.
 
 ## Development

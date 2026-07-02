@@ -23,7 +23,7 @@ APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
 PORT = int(os.environ.get("PORT", "8080"))
 
-CONTROLLER_PODS = {"homepod"}  # don't offer stop-self buttons
+CONTROLLER_PODS = {"podscale", "homepod"}  # don't offer stop-self buttons ("homepod" = pre-rename deploys)
 
 # Shared media folders (the only thing allowed to pierce the pod barrier).
 # Each share: {"host_path": "/data", "container_path": "/data", "ro": false}

@@ -71,7 +71,7 @@ FILES=(
     "display-summary.sh"
 
     # Controller bootstrap (web UI mode)
-    "bootstrap-homepod.sh"
+    "bootstrap-podscale.sh"
 )
 
 echo "[FETCH] Downloading core files into: $WORKDIR"
@@ -130,7 +130,7 @@ fi
 # the browser afterwards.
 if [[ -n "${TS_AUTHKEY:-}" ]]; then
     echo "[START] TS_AUTHKEY provided - bootstrapping the Podscale controller..."
-    TS_AUTHKEY="$TS_AUTHKEY" ./bootstrap-homepod.sh
+    TS_AUTHKEY="$TS_AUTHKEY" ./bootstrap-podscale.sh
     exit 0
 fi
 
