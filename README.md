@@ -1,100 +1,76 @@
-# HomePod Creator
+# Podscale
 
-Deploy self-hosted homelab services as Podman "pods" where **every service
-becomes its own device on your Tailscale tailnet** — with its own hostname,
-MagicDNS name, and ACL identity. One line to try it, and everything it
-produces is a plain shell script you can read.
+Deploy self-hosted services as Podman pods where **every service becomes
+its own device on your Tailscale tailnet** — its own hostname, MagicDNS
+name, HTTPS certificate, and ACL identity. No ports exposed anywhere.
+One line to install, and everything it produces is a plain script you
+can read.
+
+## Quick start — web UI (recommended)
+
+On a Debian/Ubuntu host (a VM or container works great), with a
+[Tailscale auth key](https://login.tailscale.com/admin/settings/keys):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/scs32/homelabpodcreator/main/install.sh | bash
+TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/podscale/main/install.sh)"
 ```
 
-The installer fetches the wizard scripts into your current directory,
-installs `podman` and `jq` if missing (Debian/Ubuntu), and starts an
-interactive menu. Pick a service, answer a few prompts, and you get a
-self-contained folder under `~/Pods/<service>/` with four scripts:
+This installs podman, pulls the Podscale controller image, and enrolls it
+on your tailnet. Then open **`https://homepod.<your-tailnet>.ts.net`**
+and install services from the catalog with a click.
 
-| Script | Purpose |
-|--------|---------|
-| `run.sh` | Start the service (and its Tailscale/NPM sidecars) |
-| `stop.sh` | Stop all of the service's containers |
-| `remove.sh` | Remove all of the service's containers |
-| `diagnose.sh` | Troubleshoot status, logs, bindings, connectivity |
+## Quick start — CLI wizard (no resident controller)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/scs32/podscale/main/install.sh -o install.sh
+bash install.sh   # interactive menu
+```
+
+Same engine, no web UI, nothing left running except the pods themselves.
+
+## Security model — read this
+
+**The web UI has no authentication.** Its security model is that it is
+reachable *only over your tailnet* (it binds inside its Tailscale
+sidecar's network namespace and publishes nothing). Anyone on your
+tailnet can manage your pods. Do NOT port-forward it or expose it any
+other way; use [Tailscale ACLs](https://tailscale.com/kb/1018/acls) to
+restrict which of your devices can reach it.
+
+Auth keys are stored in mode-600 files and read at runtime; they are
+never embedded in generated scripts or saved configs. Single-use keys
+are supported (a pod only needs its key once — identity persists in its
+state directory).
 
 ## The architecture
 
-Each deployment is a sidecar pod, hand-built from Podman primitives:
-
 ```
 ┌────────────────────────── shared network namespace ─┐
-│  tailscale-sonarr        sonarr         npm-sonarr  │
+│  tailscale-sonarr        sonarr        (npm-sonarr) │
 │  (joins your tailnet) ← --network container: ← ...   │
 └──────────────────────────────────────────────────────┘
 ```
 
-A Tailscale container starts first and joins your tailnet with the
-service's name as its hostname. The service (and optionally Nginx Proxy
-Manager) then share that container's network namespace via
-`--network container:tailscale-<service>`. The result:
+A Tailscale sidecar starts first and joins your tailnet with the
+service's name. The service shares its network namespace via
+`--network container:`. Optionally, `tailscale serve` terminates HTTPS
+on 443 with an automatic `ts.net` certificate.
 
-- **Per-service tailnet identity.** `sonarr` and `jellyfin` are separate
-  tailnet devices with separate MagicDNS names — so Tailscale ACLs work at
-  the *service* level. Share Jellyfin with family without exposing the
-  rest of your stack.
-- **Zero exposed ports.** With Tailscale enabled, nothing is published on
-  your LAN and port conflicts are impossible — two services can both use
-  port 8080 without caring.
-- **No daemon, no management plane.** Podman is daemonless and the
-  deployment artifact is a shell script. There is nothing resident to
-  update, secure, or break.
-
-Decline Tailscale and the service instead publishes its ports locally
-with `-p`, like a conventional container.
-
-## Requirements
-
-- A Linux host (Debian/Ubuntu for automatic dependency install) —
-  including a container or VM: running the installer inside a fresh
-  Debian container works and keeps the whole homelab in one disposable
-  guest.
-- A [Tailscale auth key](https://login.tailscale.com/admin/settings/keys)
-  if you enable Tailscale (generate it with **Ephemeral: OFF** — ephemeral
-  nodes are auto-deleted when they go offline).
-
-### Auth key handling — a first-run choice
-
-The first Tailscale deployment asks how keys should be handled:
-
-1. **Shared reusable key** (convenient): one reusable key is stored in
-   `~/Pods/.tailscale_authkey` (mode 600) and every new service enrolls
-   with it automatically. Mitigate the standing-credential risk by
-   generating the key with a tag (e.g. `tag:pod`) and an ACL that lets
-   tagged devices accept connections but initiate none.
-2. **Fresh single-use key per service** (most secure): each deployment
-   prompts for a new one-off key, stored at
-   `~/Pods/<service>/.tailscale_authkey`. Keys are only needed for a
-   pod's FIRST enrollment - afterwards its identity persists in
-   `~/Pods/<service>/tailscale/` and the spent key file can be deleted.
-
-Generated scripts read the key from its file at runtime and never embed
-it. The choice is saved in `~/Pods/.tailscale_keymode`; delete that file
-to be asked again.
+- **Per-service tailnet identity** — Tailscale ACLs work at the service
+  level. Share Jellyfin with family without exposing the rest.
+- **Zero exposed ports** — nothing on your LAN, no port conflicts ever.
+- **No daemon** — Podman is daemonless; deployments are generated shell
+  scripts (`run.sh`, `stop.sh`, `remove.sh`, `diagnose.sh`) in
+  `~/Pods/<service>/`. The optional web controller is itself just a pod.
 
 ## How this compares
 
-The one-line install is inspired by curl-installed homelab layers like
-CasaOS and Umbrel, but the design goals are inverted:
-
-| | CasaOS / Umbrel | HomePod Creator |
+| | CasaOS / Umbrel | Podscale |
 |---|---|---|
-| Interface | Web dashboard (resident service) | One-shot wizard → shell scripts |
-| Runtime | Docker | Podman (daemonless) |
-| Network | Host LAN + published ports | Per-service tailnet devices, no LAN exposure |
+| Interface | Web dashboard on the LAN | Web UI as a tailnet-only pod, or one-shot CLI |
+| Runtime | Docker daemon | Podman (daemonless) |
+| Network | Host LAN + published ports | Per-service tailnet devices, HTTPS via ts.net |
 | App catalog | Curated store | `homelab.js` — a JSON file you edit |
-
-It optimizes for the person who wants to *own and understand* every
-layer: the installer is a script that fetches scripts that generate
-scripts, and you can `cat` all of them.
 
 ## Adding a service
 
@@ -112,17 +88,24 @@ Add an entry to `homelab.js`:
 }
 ```
 
+Optional fields: `"command"` (appended after the image) and
+`"memory_limit"` (podman `-m`).
+
+## Supported platforms
+
+Debian/Ubuntu hosts with podman (auto-installed). Runs happily inside
+VMs and container-VMs (tested in apple/container guests — see
+`bootstrap-homepod.sh` for the MTU and boot-persistence handling that
+nested hosts need). Everything else: PRs welcome.
+
 ## Development
 
-Run the smoke test (no real containers or network access — podman is
-stubbed):
-
 ```sh
-bash tests/smoke.sh
+bash tests/smoke.sh   # end-to-end wizard test, podman stubbed, no network
 ```
 
-It drives the wizard end-to-end for a Tailscale and a non-Tailscale
-deployment and asserts on the generated scripts.
+CI runs shellcheck + the smoke test on every push; tags build the
+multi-arch controller image to `ghcr.io/scs32/podscale`.
 
 ## License
 

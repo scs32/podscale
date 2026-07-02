@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HomePod Creator web UI - concept-validation MVP.
+"""Podscale web UI - concept-validation MVP.
 
 Deliberately basic: Python stdlib only, no styling, no auth (it is reachable
 only over the tailnet). A thin front end over the same engine the CLI wizard
@@ -106,7 +106,7 @@ def dashboard():
     )
 
     return page(
-        "HomePod Creator",
+        "Podscale",
         f"<h2>Deployed</h2>{deployed_html}<h2>Catalog</h2>{catalog_html}",
     )
 
@@ -291,5 +291,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"HomePod web UI on :{PORT} (pods dir: {PODS_DIR})")
+    print(f"Podscale web UI on :{PORT} (pods dir: {PODS_DIR})")
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Configuration builder for HomePod Creator
+# Configuration builder for Podscale
 # Assembles the final JSON configuration from user inputs
 
 # Function to build the final configuration JSON.

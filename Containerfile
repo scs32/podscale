@@ -1,4 +1,4 @@
-# HomePod Creator controller image: the deployment engine plus the web UI.
+# Podscale controller image: the deployment engine plus the web UI.
 # Runs as a pod on the host it manages, talking to the host's podman via a
 # mounted socket (set CONTAINER_HOST=unix:///run/podman/podman.sock).
 FROM docker.io/library/alpine:3.20

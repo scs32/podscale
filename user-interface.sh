@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# User interface component for HomePod Creator
+# User interface component for Podscale
 # Handles all interactive prompts and user input.
 #
 # Every function that returns a value is called via command substitution,

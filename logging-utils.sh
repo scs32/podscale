@@ -26,7 +26,7 @@ init_logging() {
     touch "$LOG_FILE"
     
     # Write header
-    echo "=== Homepod Creator Deployment Log ===" >> "$LOG_FILE"
+    echo "=== Podscale Deployment Log ===" >> "$LOG_FILE"
     echo "Started at: $(date)" >> "$LOG_FILE"
     echo "======================================" >> "$LOG_FILE"
 }

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Smoke test for HomePod Creator.
+# Smoke test for Podscale.
 #
 # Drives the interactive wizard end-to-end with canned answers and a fake
 # `podman` on PATH, then asserts on the generated scripts and executes them.

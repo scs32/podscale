@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# HomePod Creator Orchestrator
+# Podscale Orchestrator
 # Coordinates the workflow between UI, config building, and deployment
 
 # Locate this script directory

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bootstrap the HomePod controller: a Tailscale sidecar plus the controller
+# Bootstrap the Podscale controller: a Tailscale sidecar plus the controller
 # web UI sharing its network namespace - deployed exactly like any other pod.
 #
 # Usage:
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 PODS_DIR="${PODS_DIR:-$HOME/Pods}"
-IMAGE="${HOMEPOD_IMAGE:-localhost/homepod:dev}"
+IMAGE="${HOMEPOD_IMAGE:-ghcr.io/scs32/podscale:latest}"
 TS_IMAGE="docker.io/tailscale/tailscale:stable"
 SOCKET="/run/podman/podman.sock"
 KEY_FILE="$PODS_DIR/homepod/.tailscale_authkey"
@@ -119,7 +119,7 @@ if ! podman ps --format '{{.Names}}' | grep -q '^tailscale-homepod$'; then
     exit 1
 fi
 
-echo "Starting HomePod controller..."
+echo "Starting Podscale controller..."
 podman run -d \
   --name homepod \
   --network container:tailscale-homepod \
@@ -134,5 +134,5 @@ sleep 3
 FQDN=$(podman exec tailscale-homepod tailscale status --json --peers=false 2>/dev/null \
     | grep -o '"DNSName": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)
 echo ""
-echo "HomePod controller is up."
+echo "Podscale controller is up."
 echo "  Web UI: https://${FQDN%.}  (or http://${FQDN%.}:8080)"

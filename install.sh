@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "[INFO] Installing and launching Homepod Creator (Gen 4.0)..."
+echo "[INFO] Installing and launching Podscale..."
 
 WORKDIR="$(pwd)"
-REPO_BASE_URL="https://raw.githubusercontent.com/scs32/homelabpodcreator/main"
+REPO_BASE_URL="https://raw.githubusercontent.com/scs32/podscale/main"
 
 # --- Check and install podman ---
 echo "[CHECK] Looking for podman..."
@@ -62,6 +62,9 @@ FILES=(
     "generate-run-template.sh"
     "generate-diagnose-template.sh"
     "display-summary.sh"
+
+    # Controller bootstrap (web UI mode)
+    "bootstrap-homepod.sh"
 )
 
 echo "[FETCH] Downloading core files into: $WORKDIR"
@@ -115,10 +118,19 @@ if [[ ! -f "homelab.sh" ]]; then
     ln -s homelab-orchestrator.sh homelab.sh
 fi
 
+# Controller mode: with a Tailscale auth key provided, stand up the web UI
+# controller pod (pulls ghcr.io/scs32/podscale) and manage everything from
+# the browser afterwards.
+if [[ -n "${TS_AUTHKEY:-}" ]]; then
+    echo "[START] TS_AUTHKEY provided - bootstrapping the Podscale controller..."
+    TS_AUTHKEY="$TS_AUTHKEY" ./bootstrap-homepod.sh
+    exit 0
+fi
+
 # Check if we're running interactively
 if [[ -t 0 ]]; then
     # Running interactively, launch homelab.sh directly
-    echo "[START] Running Homepod Creator..."
+    echo "[START] Running Podscale..."
     ./homelab.sh
 else
     # Not running interactively (piped), save scripts and provide instructions
