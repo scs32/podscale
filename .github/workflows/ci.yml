@@ -17,3 +17,5 @@ jobs:
         run: bash tests/smoke.sh
       - name: Web shares test (registry + attach flow against create.sh)
         run: python3 tests/web-shares.py
+      - name: Web API test (JSON API end-to-end over HTTP)
+        run: python3 tests/web-api.py
