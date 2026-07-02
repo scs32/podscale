@@ -157,10 +157,13 @@ EOF
         echo "  -e $env_pair \\"
     done < <(jq -r '.environment | to_entries[] | "\(.key)=\"\(.value)\""' <<<"$service_info")
 
-    # Volume mounts
+    # Volume mounts; a host path ending in :ro becomes a read-only mount
     while IFS= read -r volume_pair; do
         echo "  -v $volume_pair \\"
-    done < <(jq -r '.volumes | to_entries[] | "\(.value):\(.key)"' <<<"$service_info")
+    done < <(jq -r '.volumes | to_entries[] |
+        if (.value | endswith(":ro"))
+        then "\(.value | rtrimstr(":ro")):\(.key):ro"
+        else "\(.value):\(.key)" end' <<<"$service_info")
 
     # Complete the service container command
     echo "  --restart $restart_policy \\"

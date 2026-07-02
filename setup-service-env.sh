@@ -59,13 +59,27 @@ create_volume_directories() {
     local host_paths
     readarray -t host_paths < <(jq -r '.[]' <<<"$volumes_json")
     
+    local read_only
     for host_path in "${host_paths[@]}"; do
         if [[ -n "$host_path" ]]; then
+            # A :ro suffix marks a read-only mount: strip it before touching
+            # the filesystem, and never chown into shared/archive data.
+            read_only="no"
+            if [[ "$host_path" == *:ro ]]; then
+                host_path="${host_path%:ro}"
+                read_only="yes"
+            fi
+
             log_info "Creating volume directory: $host_path"
-            ensure_directory "$host_path" "volume directory"
-            
+            if ! ensure_directory "$host_path" "volume directory"; then
+                # Read-only paths may sit on media the pod host cannot write
+                # (e.g. an NFS export); assume they exist at runtime.
+                [[ "$read_only" == "yes" ]] || return 1
+                log_warn "Could not create read-only volume path $host_path - assuming it exists at runtime"
+            fi
+
             # Set ownership if PUID/PGID are provided
-            if [[ -n "$puid" && -n "$pgid" ]]; then
+            if [[ "$read_only" == "no" && -n "$puid" && -n "$pgid" ]]; then
                 set_directory_ownership "$host_path" "$puid" "$pgid"
             fi
         fi

@@ -126,7 +126,7 @@ placeholder='e.g. sleep infinity'></label></p>
 <textarea name='ports' rows=2 cols=30 placeholder='8080:8080'></textarea></label></p>
 <p><label>Environment, one KEY=value per line<br>
 <textarea name='envlines' rows=3 cols=40></textarea></label></p>
-<p><label>Volumes, one /container/path=/host/path per line<br>
+<p><label>Volumes, one /container/path=/host/path per line (append :ro to a host path for read-only)<br>
 <textarea name='vollines' rows=3 cols=60
 placeholder='/config={html.escape(PODS_DIR)}/&lt;name&gt;/config'></textarea></label></p>
 <p><label><input type='checkbox' name='tailscale' checked> Tailscale (own tailnet identity)</label></p>

@@ -216,6 +216,9 @@ service_counts lidarr
     printf '%s\n' "$TEST_KEY2"   # per-service auth key
     blanks "$ENV_COUNT"          # env var defaults
     blanks "$VOL_COUNT"          # volume defaults
+    printf 'yes\n'               # add another volume
+    printf '/archive\n'          # container path
+    printf '%s\n' "$HOME/media-archive:ro"  # host path with read-only suffix
     printf '\n'                  # no more volumes
     printf 'yes\n'               # confirm
     printf 'yes\nyes\n'          # slack for any re-prompt
@@ -239,6 +242,12 @@ pass "per-service key not embedded in generated scripts or shared key file"
 grep -q "tailscaled.state" "$SVC_DIR/run.sh" \
     || fail "run.sh does not tolerate a spent/deleted single-use key (no state fallback)"
 pass "run.sh accepts existing Tailscale state in place of a key file"
+
+grep -q -- "-v $HOME/media-archive:/archive:ro" "$SVC_DIR/run.sh" \
+    || fail "run.sh does not mount the :ro volume as host:container:ro"
+[ -d "$HOME/media-archive" ] || fail ":ro volume host directory was not created"
+[ ! -d "$HOME/media-archive:ro" ] || fail ":ro suffix leaked into a directory name"
+pass ":ro volume mounts read-only; suffix stripped from filesystem paths"
 
 run_generated "$SVC_DIR"
 pass "per-service run.sh executes cleanly (stubbed podman, WAIT=0)"
