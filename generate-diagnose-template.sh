@@ -32,11 +32,11 @@ if podman ps --format '{{.Names}}' | grep -q "^tailscale-\$SERVICE_NAME\$"; then
   TS_IP=\$(podman exec tailscale-\$SERVICE_NAME tailscale ip -4 2>/dev/null || echo "Not available")
   echo "IP: \$TS_IP"
   
-  # Get hostname properly
-  TS_HOSTNAME=\$(podman exec tailscale-\$SERVICE_NAME tailscale status --self 2>/dev/null | head -1 | awk '{print \$2}' || echo "")
-  if [ -n "\$TS_HOSTNAME" ]; then
-    echo "Hostname: \$TS_HOSTNAME"
-    echo "FQDN: \${TS_HOSTNAME}.ts.net"
+  # The full MagicDNS name (host.<tailnet>.ts.net) comes from DNSName;
+  # the bare hostname alone is NOT a resolvable FQDN.
+  TS_DNSNAME=\$(podman exec tailscale-\$SERVICE_NAME tailscale status --json --peers=false 2>/dev/null | grep -o '"DNSName": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+  if [ -n "\$TS_DNSNAME" ]; then
+    echo "MagicDNS: \${TS_DNSNAME%.}"
   fi
   echo ""
 fi

@@ -8,16 +8,16 @@ parse_service_config() {
     local service
     local image_raw
     local restart_policy
-    local auth_key
+    local auth_key_file
     local base_path
     local include_ts
     local include_npm
     local network_mode
-    
+
     service=$(jq -r '.container' <<<"$config_json")
     image_raw=$(jq -r '.image' <<<"$config_json")
     restart_policy=$(jq -r '.restart_policy' <<<"$config_json")
-    auth_key=$(jq -r '.auth_key' <<<"$config_json")
+    auth_key_file=$(jq -r '.auth_key_file // ""' <<<"$config_json")
     base_path=$(jq -r '.base_path' <<<"$config_json")
     include_ts=$(jq -r '.include_tailscale' <<<"$config_json")
     include_npm=$(jq -r '.include_npm' <<<"$config_json")
@@ -71,7 +71,7 @@ parse_service_config() {
         --arg ts_image "$ts_image" \
         --arg npm_image "$npm_image" \
         --arg restart_policy "$restart_policy" \
-        --arg auth_key "$auth_key" \
+        --arg auth_key_file "$auth_key_file" \
         --arg base_path "$base_path" \
         --arg service_dir "$service_dir" \
         --arg include_ts "$include_ts" \
@@ -87,7 +87,7 @@ parse_service_config() {
             ts_image: $ts_image,
             npm_image: $npm_image,
             restart_policy: $restart_policy,
-            auth_key: $auth_key,
+            auth_key_file: $auth_key_file,
             base_path: $base_path,
             service_dir: $service_dir,
             include_tailscale: $include_ts,
@@ -112,48 +112,4 @@ qualify_image() {
     else
         echo "$img"
     fi
-}
-
-# Helper function to extract environment variable keys and values
-extract_env_vars() {
-    local env_json="$1"
-    local format="${2:-keyvalue}"  # keyvalue or arrays
-    
-    if [[ "$format" == "arrays" ]]; then
-        # Return keys and values as separate arrays
-        local keys
-        local values
-        keys=$(jq -r 'keys[]' <<<"$env_json")
-        values=$(jq -r '.[]' <<<"$env_json")
-        echo "$keys"
-        echo "$values"
-    else
-        # Return as key=value pairs
-        jq -r 'to_entries[] | "\(.key)=\(.value)"' <<<"$env_json"
-    fi
-}
-
-# Helper function to extract volume mappings
-extract_volumes() {
-    local volumes_json="$1"
-    
-    # Return as source:target pairs
-    jq -r 'to_entries[] | "\(.value):\(.key)"' <<<"$volumes_json"
-}
-
-# Helper function to extract port mappings
-extract_ports() {
-    local ports_json="$1"
-    
-    # Return as host:container pairs
-    jq -r 'to_entries[] | "\(.value):\(.key)"' <<<"$ports_json"
-}
-
-# Debug function to display parsed configuration
-debug_service_config() {
-    local service_info="$1"
-    
-    log_debug "=== Parsed Service Configuration ==="
-    echo "$service_info" | jq '.'
-    log_debug "=================================="
 }

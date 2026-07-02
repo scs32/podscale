@@ -3,7 +3,7 @@
 # Generate the run.sh script content
 generate_run_template() {
     local service="$1"
-    local auth_key="$2"
+    local auth_key_file="$2"
     local ts_image="$3"
     local npm_image="$4"
     local service_image="$5"
@@ -12,14 +12,17 @@ generate_run_template() {
     local include_npm="$8"
     local primary_port="$9"
     local service_info="${10}"
-    
-    # Create the complete script content using a here document
+
+    local ports_json
+    ports_json=$(jq -c '.ports // {}' <<<"$service_info")
+
+    # --- Header and container cleanup ---
     cat << EOF
 #!/bin/sh
 set -e
 
-# Initialize TS_NAME with a unique name for this Tailscale instance
-TS_NAME="$service"
+# Seconds to wait between startup phases (override with WAIT=0 ./run.sh)
+WAIT="\${WAIT:-10}"
 
 # Automatically remove existing containers for this service only
 echo "Removing existing $service containers..."
@@ -29,162 +32,168 @@ podman rm -f tailscale-$service 2>/dev/null || true
 
 EOF
 
-    # Add Tailscale startup if included
+    # --- Tailscale sidecar ---
     if [[ "$include_ts" == "yes" ]]; then
         cat << EOF
-# Start Tailscale first with unique hostname
-echo "Starting Tailscale..."
-if ! podman ps --format '{{.Names}}' | grep -q "^tailscale-$service\$"; then
-  podman run -d \\
-    --name tailscale-$service \\
-    --cap-add NET_ADMIN --cap-add NET_RAW \\
-    --device /dev/net/tun \\
-    -v /dev/net/tun:/dev/net/tun \\
-    -v \$(pwd)/tailscale:/var/lib/tailscale \\
-    -e TS_AUTHKEY="$auth_key" \\
-    -e TS_STATE_DIR=/var/lib/tailscale \\
-    -e TS_HOSTNAME="\$TS_NAME" \\
-    -e TS_TAGS="tag:\$TS_NAME" \\
-    -e TS_EXTRA_ARGS="--hostname=\$TS_NAME --accept-routes" \\
-    $ts_image
+# The auth key is read from this file at runtime and is never stored
+# in this script or in saved configurations.
+TS_AUTHKEY_FILE="$auth_key_file"
+if [ ! -f "\$TS_AUTHKEY_FILE" ]; then
+  echo "Error: Tailscale auth key file not found: \$TS_AUTHKEY_FILE" >&2
+  exit 1
 fi
 
+# Start Tailscale first with a unique hostname for this service
+echo "Starting Tailscale..."
+podman run -d \\
+  --name tailscale-$service \\
+  --cap-add NET_ADMIN --cap-add NET_RAW \\
+  --device /dev/net/tun \\
+  -v "\$(pwd)/tailscale:/var/lib/tailscale" \\
+  -e TS_AUTHKEY="\$(cat "\$TS_AUTHKEY_FILE")" \\
+  -e TS_STATE_DIR=/var/lib/tailscale \\
+  -e TS_HOSTNAME="$service" \\
+  -e TS_EXTRA_ARGS="--hostname=$service" \\
+  $ts_image
+
 echo "Waiting for Tailscale..."
-sleep 10
+sleep "\$WAIT"
 
 EOF
     fi
 
-    # Add NPM startup if included
+    # --- Nginx Proxy Manager ---
     if [[ "$include_npm" == "yes" ]]; then
         cat << EOF
 # Start NPM
 echo "Starting Nginx Proxy Manager..."
-if ! podman ps --format '{{.Names}}' | grep -q "^npm-$service\$"; then
-  podman run -d \\
-    --name npm-$service \\
-    --network container:tailscale-$service \\
-    -e DB_SQLITE_FILE="/data/database.sqlite" \\
-    -v \$(pwd)/npm/data:/data \\
-    -v \$(pwd)/npm/letsencrypt:/etc/letsencrypt \\
-    $npm_image
-fi
+podman run -d \\
+  --name npm-$service \\
+EOF
+        if [[ "$include_ts" == "yes" ]]; then
+            echo "  --network container:tailscale-$service \\"
+        else
+            echo "  -p 80:80 -p 81:81 -p 443:443 \\"
+        fi
+        cat << EOF
+  -e DB_SQLITE_FILE="/data/database.sqlite" \\
+  -v "\$(pwd)/npm/data:/data" \\
+  -v "\$(pwd)/npm/letsencrypt:/etc/letsencrypt" \\
+  $npm_image
 
 echo "Waiting for NPM..."
-sleep 5
+sleep "\$WAIT"
 
 EOF
     fi
 
-    # Start main service command
+    # --- Main service ---
     cat << EOF
 # Start main service
 echo "Starting $service..."
-if ! podman ps --format '{{.Names}}' | grep -q "^$service\$"; then
-  podman run -d \\
-    --name $service \\
+podman run -d \\
+  --name $service \\
 EOF
 
-    # Add network configuration
+    # Network configuration: share the Tailscale sidecar's namespace, or
+    # publish ports directly when running without Tailscale.
     if [[ "$include_ts" == "yes" ]]; then
-        echo "    --network container:tailscale-$service \\"
+        echo "  --network container:tailscale-$service \\"
+    else
+        local port_pair
+        while IFS= read -r port_pair; do
+            echo "  -p $port_pair \\"
+        done < <(jq -r 'to_entries[] | "\(.key):\(.value)"' <<<"$ports_json")
     fi
 
-    # Add environment variables
-    local env_vars_json
-    env_vars_json=$(jq -c '.environment' <<<"$service_info")
-    
+    # Environment variables
     while IFS= read -r env_pair; do
-        echo "    -e $env_pair \\"
-    done < <(jq -r 'to_entries[] | "\(.key)=\"\(.value)\""' <<<"$env_vars_json")
+        echo "  -e $env_pair \\"
+    done < <(jq -r '.environment | to_entries[] | "\(.key)=\"\(.value)\""' <<<"$service_info")
 
-    # Add volume mounts
-    local volumes_json
-    volumes_json=$(jq -c '.volumes' <<<"$service_info")
-    
+    # Volume mounts
     while IFS= read -r volume_pair; do
-        echo "    -v $volume_pair \\"
-    done < <(jq -r 'to_entries[] | "\(.value):\(.key)"' <<<"$volumes_json")
+        echo "  -v $volume_pair \\"
+    done < <(jq -r '.volumes | to_entries[] | "\(.value):\(.key)"' <<<"$service_info")
 
     # Complete the service container command
     cat << EOF
-    --restart $restart_policy \\
-    $service_image
-fi
+  --restart $restart_policy \\
+  $service_image
 
 echo "Waiting for $service..."
-sleep 10
+sleep "\$WAIT"
 
 EOF
 
-    # Add binding check if primary port exists
+    # --- Bind-address fix (Arr-suite style config.xml) ---
     if [[ -n "$primary_port" ]]; then
         cat << EOF
-# Check binding configuration if service has ports defined
-if [ -n "$primary_port" ]; then
-  echo "Checking $service binding configuration..."
-  sleep 5
-  
-  if podman exec $service sh -c "[ -f /config/config.xml ]" 2>/dev/null; then
-    BIND_ADDRESS=\$(podman exec $service grep -oP '(?<=<BindAddress>)[^<]+' /config/config.xml 2>/dev/null || echo "Not found")
-    
-    if [ "\$BIND_ADDRESS" = "127.0.0.1" ]; then
-      echo "Fixing binding address..."
-      podman exec $service sed -i 's/<BindAddress>127.0.0.1</<BindAddress>*</g' /config/config.xml
-      echo "Restarting $service..."
-      podman restart $service
-      sleep 5
-    elif [ "\$BIND_ADDRESS" = "*" ]; then
-      echo "Binding configuration is correct"
-    fi
-  else
-    echo "Config file not found yet - $service may still be initializing"
+# Services with a config.xml (Sonarr/Radarr/etc.) sometimes bind to
+# 127.0.0.1 only, which blocks access from outside the container.
+echo "Checking $service binding configuration..."
+if podman exec $service sh -c "[ -f /config/config.xml ]" 2>/dev/null; then
+  BIND_ADDRESS=\$(podman exec $service grep -oP '(?<=<BindAddress>)[^<]+' /config/config.xml 2>/dev/null || echo "")
+  if [ "\$BIND_ADDRESS" = "127.0.0.1" ]; then
+    echo "Fixing binding address..."
+    podman exec $service sed -i 's/<BindAddress>127.0.0.1</<BindAddress>*</g' /config/config.xml
+    echo "Restarting $service..."
+    podman restart $service
+    sleep "\$WAIT"
   fi
+else
+  echo "Config file not found - $service may still be initializing"
 fi
 
 EOF
     fi
 
-    # Add network information section
+    # --- Results ---
+    if [[ "$include_ts" == "yes" ]]; then
+        generate_tailscale_results "$service" "$include_npm" "$primary_port" "$ports_json"
+    else
+        generate_local_results "$service" "$include_npm" "$primary_port" "$ports_json"
+    fi
+}
+
+# Result section for Tailscale-enabled deployments
+generate_tailscale_results() {
+    local service="$1"
+    local include_npm="$2"
+    local primary_port="$3"
+    local ports_json="$4"
+
     cat << EOF
-# Get Tailscale information
+# Get Tailscale network information
 echo "Getting network information..."
-
-# Install network tools if needed
-podman exec tailscale-$service sh -c "command -v wget >/dev/null 2>&1 || (apk add --no-cache wget curl >/dev/null 2>&1 || (apt-get update >/dev/null 2>&1 && apt-get install -y wget curl >/dev/null 2>&1))" 2>/dev/null
-
-# Get network details
 TS_IP=\$(podman exec tailscale-$service tailscale ip -4 2>/dev/null || echo "Not available")
-TS_HOSTNAME=\$(podman exec tailscale-$service tailscale status --self 2>/dev/null | head -1 | awk '{print \$2}' || echo "")
-if [ -z "\$TS_HOSTNAME" ]; then
-  TS_HOSTNAME="\$TS_NAME"
-fi
-TS_FQDN="\${TS_HOSTNAME}.ts.net"
 
-# Run connectivity checks
+# The full MagicDNS name (host.<tailnet>.ts.net) comes from DNSName;
+# the bare hostname alone is NOT a resolvable FQDN.
+TS_DNSNAME=\$(podman exec tailscale-$service tailscale status --json --peers=false 2>/dev/null | grep -o '"DNSName": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+TS_FQDN="\${TS_DNSNAME%.}"
+if [ -z "\$TS_FQDN" ]; then
+  TS_FQDN="<pending - run: podman exec tailscale-$service tailscale status>"
+fi
+
 echo ""
 echo "Verifying services..."
-
 EOF
 
-    # Add connectivity checks
     if [[ "$include_npm" == "yes" ]]; then
         cat << EOF
-# Check NPM connectivity
 NPM_READY=\$(podman exec tailscale-$service wget -q --spider --timeout=5 http://localhost:81 2>/dev/null && echo "yes" || echo "no")
 EOF
     fi
-    
+
     if [[ -n "$primary_port" ]]; then
         cat << EOF
-# Check service connectivity  
 SERVICE_READY=\$(podman exec tailscale-$service wget -q --spider --timeout=5 http://localhost:$primary_port 2>/dev/null && echo "yes" || echo "no")
 EOF
     fi
 
-    # Add results display
     cat << EOF
-# Display results
+
 echo ""
 echo "========================================"
 echo "  $service Deployment Complete"
@@ -192,90 +201,86 @@ echo "========================================"
 echo ""
 echo "Network Information:"
 echo "  Tailscale IP: \$TS_IP"
-echo "  Hostname: \$TS_HOSTNAME"
-echo "  FQDN: \$TS_FQDN"
+echo "  MagicDNS: \$TS_FQDN"
 echo ""
 echo "Service Status:"
 EOF
 
-    # Add NPM status
     if [[ "$include_npm" == "yes" ]]; then
         cat << EOF
 if [ "\$NPM_READY" = "yes" ]; then
-  echo "  Nginx Proxy Manager: ✓ Ready"
+  echo "  Nginx Proxy Manager: OK"
 else
-  echo "  Nginx Proxy Manager: × Not ready"
+  echo "  Nginx Proxy Manager: not ready"
 fi
 EOF
     fi
 
-    # Add service status
     if [[ -n "$primary_port" ]]; then
         cat << EOF
 if [ "\$SERVICE_READY" = "yes" ]; then
-  echo "  $service: ✓ Ready"
+  echo "  $service: OK"
 else
-  echo "  $service: × Not ready"
+  echo "  $service: not ready"
 fi
 EOF
     fi
 
-    # Add access URLs
     cat << EOF
 echo ""
 echo "Access URLs:"
 EOF
 
     if [[ "$include_npm" == "yes" ]]; then
-        cat << EOF
-echo "  NPM Admin: http://\$TS_FQDN:81"
-EOF
+        echo "echo \"  NPM Admin: http://\$TS_FQDN:81\""
     fi
 
     if [[ -n "$primary_port" ]]; then
+        echo "echo \"  $service: http://\$TS_FQDN:$primary_port\""
         cat << EOF
-echo "  $service: http://\$TS_FQDN:$primary_port"
-EOF
-    fi
-
-    # Add multiple ports if they exist
-    local port_count
-    port_count=$(jq '.ports | length' <<<"$service_info")
-    
-    if [[ $port_count -gt 1 ]]; then
-        cat << EOF
-echo ""
-echo "Additional Ports:"
-EOF
-        
-        # Get all ports except the first one
-        while IFS= read -r port; do
-            cat << EOF
-echo "  - Port $port: http://\$TS_FQDN:$port"
-EOF
-        done < <(jq -r '.ports | keys[1:][]' <<<"$service_info")
-    fi
-
-    # Add direct IP access
-    cat << EOF
 echo ""
 echo "Direct IP Access:"
-echo "  http://\$TS_IP:81 (NPM)"
-EOF
-
-    if [[ -n "$primary_port" ]]; then
-        cat << EOF
 echo "  http://\$TS_IP:$primary_port ($service)"
 EOF
     fi
 
-    # Add final troubleshooting note
     cat << EOF
 echo ""
 
-if [ "\$SERVICE_READY" != "yes" ]; then
+if [ "\${SERVICE_READY:-yes}" != "yes" ]; then
   echo "Note: $service is not yet accessible."
   echo "Run './diagnose.sh' if the issue persists."
 fi
+EOF
+}
+
+# Result section for deployments without Tailscale (locally published ports)
+generate_local_results() {
+    local service="$1"
+    local include_npm="$2"
+    local primary_port="$3"
+    local ports_json="$4"
+
+    cat << EOF
+echo ""
+echo "========================================"
+echo "  $service Deployment Complete"
+echo "========================================"
+echo ""
+echo "Access URLs (local network):"
+EOF
+
+    if [[ "$include_npm" == "yes" ]]; then
+        echo "echo \"  NPM Admin: http://localhost:81\""
+    fi
+
+    local host_port
+    while IFS= read -r host_port; do
+        echo "echo \"  $service: http://localhost:$host_port\""
+    done < <(jq -r 'keys[]' <<<"$ports_json")
+
+    cat << EOF
+echo ""
+echo "Run './diagnose.sh' if the service is not reachable."
 EOF
 }

@@ -38,7 +38,7 @@ generate_run_script() {
     local ts_image=$(jq -r '.ts_image' <<<"$service_info")
     local npm_image=$(jq -r '.npm_image' <<<"$service_info")
     local restart_policy=$(jq -r '.restart_policy' <<<"$service_info")
-    local auth_key=$(jq -r '.auth_key' <<<"$service_info")
+    local auth_key_file=$(jq -r '.auth_key_file' <<<"$service_info")
     local include_ts=$(jq -r '.include_tailscale' <<<"$service_info")
     local include_npm=$(jq -r '.include_npm' <<<"$service_info")
     local primary_port=$(jq -r '.primary_port' <<<"$service_info")
@@ -50,7 +50,7 @@ generate_run_script() {
     local run_content
     run_content=$(generate_run_template \
         "$service" \
-        "$auth_key" \
+        "$auth_key_file" \
         "$ts_image" \
         "$npm_image" \
         "$service_image" \
@@ -168,43 +168,4 @@ generate_diagnose_script() {
     echo "$diagnose_content" > "$service_dir/diagnose.sh"
     
     log_success "diagnose.sh generated"
-}
-
-# Verify all scripts were created
-verify_script_generation() {
-    local service_dir="$1"
-    
-    log_info "Verifying script generation"
-    
-    local scripts=("run.sh" "stop.sh" "remove.sh" "diagnose.sh")
-    local missing_scripts=()
-    
-    for script in "${scripts[@]}"; do
-        if [[ ! -f "$service_dir/$script" ]]; then
-            missing_scripts+=("$script")
-        fi
-    done
-    
-    if [[ ${#missing_scripts[@]} -gt 0 ]]; then
-        log_error "Missing scripts: ${missing_scripts[*]}"
-        return 1
-    fi
-    
-    log_success "All scripts verified"
-}
-
-# Display scripts summary
-display_scripts_summary() {
-    local service_dir="$1"
-    
-    log_section "Generated Scripts Summary"
-    
-    if [[ -d "$service_dir" ]]; then
-        echo "Scripts in $service_dir:"
-        for script in run.sh stop.sh remove.sh diagnose.sh; do
-            if [[ -f "$service_dir/$script" ]]; then
-                echo "  ✓ $script ($(stat -c%s "$service_dir/$script") bytes)"
-            fi
-        done
-    fi
 }

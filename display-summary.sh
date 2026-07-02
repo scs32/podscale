@@ -97,68 +97,20 @@ display_access_info() {
     echo "------------------"
     
     if [[ "$include_ts" == "yes" ]]; then
-        echo "  Once deployed, the service will be accessible via Tailscale:"
-        
+        echo "  Once deployed, the service will be a device on your tailnet"
+        echo "  (hostname: $service)."
         if [[ "$include_npm" == "yes" ]]; then
-            echo "    NPM Admin: http://${service}.ts.net:81"
+            echo "    NPM Admin: port 81 on the service's MagicDNS name"
         fi
-        
         if [[ -n "$primary_port" ]]; then
-            echo "    $service: http://${service}.ts.net:$primary_port"
+            echo "    $service: port $primary_port on the service's MagicDNS name"
         fi
-        
         echo ""
-        echo "  Note: The exact hostname will be displayed after running ./run.sh"
+        echo "  Note: The full MagicDNS URL is displayed after running ./run.sh"
     else
         echo "  Service will be accessible via local network only"
         if [[ -n "$primary_port" ]]; then
             echo "    Port: $primary_port"
         fi
     fi
-}
-
-# Display troubleshooting information
-display_troubleshooting_info() {
-    echo ""
-    echo "Troubleshooting:"
-    echo "---------------"
-    echo "  1. Check logs with: podman logs <container_name>"
-    echo "  2. Use diagnose.sh for comprehensive diagnostics"
-    echo "  3. Restart services with: ./stop.sh && ./run.sh"
-    echo "  4. Full reset with: ./remove.sh && ./run.sh"
-}
-
-# Display configuration summary
-display_configuration_summary() {
-    local service_info="$1"
-    
-    echo ""
-    echo "Configuration Summary:"
-    echo "---------------------"
-    
-    # Environment variables
-    echo "  Environment Variables:"
-    jq -r '.environment | to_entries[] | "    \(.key)=\(.value)"' <<<"$service_info"
-    
-    # Volumes
-    echo "  Volume Mappings:"
-    jq -r '.volumes | to_entries[] | "    \(.value) → \(.key)"' <<<"$service_info"
-    
-    # Ports
-    echo "  Port Mappings:"
-    jq -r '.ports | to_entries[] | "    \(.value) → \(.key)"' <<<"$service_info"
-}
-
-# Final deployment message
-display_final_message() {
-    local service_dir="$1"
-    
-    echo ""
-    echo "=========================================="
-    echo "  Deployment Complete!"
-    echo "=========================================="
-    echo ""
-    echo "To start your service:"
-    echo "  cd $service_dir && ./run.sh"
-    echo ""
 }
