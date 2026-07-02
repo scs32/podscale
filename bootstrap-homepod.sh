@@ -49,6 +49,36 @@ if [[ ! -S "$SOCKET" ]]; then
     [[ -S "$SOCKET" ]] || { echo "Error: could not start podman API socket" >&2; exit 1; }
 fi
 
+# --- boot recovery script: this host may keep /run on disk (not tmpfs),
+# so podman cannot detect reboots and wedges on stale state. Install a
+# start script that wipes the runroot once per boot (tmpfs sentinel in
+# /dev/shm) and starts sidecars before services. Wire it to whatever
+# starts this host at boot (LaunchAgent, cron @reboot, etc.).
+cat > /root/start-pods.sh << 'STARTEOF'
+#!/bin/sh
+# Bring up the pod fleet after guest boot (see bootstrap-homepod.sh).
+if [ ! -f /dev/shm/pods-booted ]; then
+  rm -rf /run/containers /run/user/0/netns /run/libpod 2>/dev/null || true
+  touch /dev/shm/pods-booted
+fi
+
+mkdir -p /run/podman
+if [ ! -S /run/podman/podman.sock ]; then
+  nohup podman system service --time=0 unix:///run/podman/podman.sock >/var/log/podman-api.log 2>&1 &
+  sleep 2
+fi
+
+for c in $(podman ps -a --format "{{.Names}}" | grep "^tailscale-"); do
+  podman start "$c" >/dev/null 2>&1 || true
+done
+sleep 5
+for c in $(podman ps -a --format "{{.Names}}" | grep -v "^tailscale-"); do
+  podman start "$c" >/dev/null 2>&1 || { sleep 3; podman start "$c" >/dev/null 2>&1; } || true
+done
+podman ps --format "{{.Names}}"
+STARTEOF
+chmod +x /root/start-pods.sh
+
 mkdir -p "$PODS_DIR/homepod/tailscale"
 
 echo "Removing existing homepod containers..."
