@@ -23,6 +23,9 @@ parse_service_config() {
     include_npm=$(jq -r '.include_npm' <<<"$config_json")
     local include_https
     include_https=$(jq -r '.include_https // "no"' <<<"$config_json")
+    local command_str memory_limit
+    command_str=$(jq -r '.command // ""' <<<"$config_json")
+    memory_limit=$(jq -r '.memory_limit // ""' <<<"$config_json")
     network_mode=$(jq -r '.network_mode // "bridge"' <<<"$config_json")
     
     # Validate required fields
@@ -79,6 +82,8 @@ parse_service_config() {
         --arg include_ts "$include_ts" \
         --arg include_npm "$include_npm" \
         --arg include_https "$include_https" \
+        --arg command "$command_str" \
+        --arg memory_limit "$memory_limit" \
         --arg network_mode "$network_mode" \
         --arg primary_port "$primary_port" \
         --argjson env_vars "$env_vars_json" \
@@ -96,6 +101,8 @@ parse_service_config() {
             include_tailscale: $include_ts,
             include_npm: $include_npm,
             include_https: $include_https,
+            command: $command,
+            memory_limit: $memory_limit,
             network_mode: $network_mode,
             primary_port: $primary_port,
             environment: $env_vars,

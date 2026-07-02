@@ -14,8 +14,10 @@ generate_run_template() {
     local service_info="${10}"
     local include_https="${11:-no}"
 
-    local ports_json
+    local ports_json command_str memory_limit
     ports_json=$(jq -c '.ports // {}' <<<"$service_info")
+    command_str=$(jq -r '.command // ""' <<<"$service_info")
+    memory_limit=$(jq -r '.memory_limit // ""' <<<"$service_info")
 
     # HTTPS needs a port to proxy to and a Tailscale sidecar to serve from
     if [[ "$include_https" == "yes" && ( -z "$primary_port" || "$include_ts" != "yes" ) ]]; then
@@ -161,9 +163,17 @@ EOF
     done < <(jq -r '.volumes | to_entries[] | "\(.value):\(.key)"' <<<"$service_info")
 
     # Complete the service container command
+    echo "  --restart $restart_policy \\"
+    if [[ -n "$memory_limit" ]]; then
+        echo "  -m $memory_limit \\"
+    fi
+    if [[ -n "$command_str" ]]; then
+        echo "  $service_image \\"
+        echo "  $command_str"
+    else
+        echo "  $service_image"
+    fi
     cat << EOF
-  --restart $restart_policy \\
-  $service_image
 
 echo "Waiting for $service..."
 sleep "\$WAIT"
