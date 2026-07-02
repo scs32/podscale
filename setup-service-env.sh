@@ -72,10 +72,11 @@ create_volume_directories() {
 
             log_info "Creating volume directory: $host_path"
             if ! ensure_directory "$host_path" "volume directory"; then
-                # Read-only paths may sit on media the pod host cannot write
-                # (e.g. an NFS export); assume they exist at runtime.
-                [[ "$read_only" == "yes" ]] || return 1
-                log_warn "Could not create read-only volume path $host_path - assuming it exists at runtime"
+                # Not fatal: a shared media root (NAS-backed /data, read-only
+                # export...) may not be mounted or writable at install time,
+                # and podman creates missing bind sources when the pod runs.
+                log_warn "Could not create volume path $host_path - it must exist when the pod starts"
+                continue
             fi
 
             # Set ownership if PUID/PGID are provided

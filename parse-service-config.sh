@@ -59,6 +59,11 @@ parse_service_config() {
     # Parse ports
     local ports_json
     ports_json=$(jq -c '.ports // {}' <<<"$config_json")
+
+    # Shared-folder names (web UI concept) ride along into .config.json so
+    # pods can be re-rendered against the shares registry later.
+    local shares_json
+    shares_json=$(jq -c '.shares // []' <<<"$config_json")
     
     # Determine primary port
     local primary_port
@@ -89,6 +94,7 @@ parse_service_config() {
         --argjson env_vars "$env_vars_json" \
         --argjson volumes "$volumes_json" \
         --argjson ports "$ports_json" \
+        --argjson shares "$shares_json" \
         '{
             service: $service,
             image: $image,
@@ -107,7 +113,8 @@ parse_service_config() {
             primary_port: $primary_port,
             environment: $env_vars,
             volumes: $volumes,
-            ports: $ports
+            ports: $ports,
+            shares: $shares
         }')
     
     echo "$service_info"
