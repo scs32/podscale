@@ -30,6 +30,15 @@ elif [[ ! -f "$KEY_FILE" && ! -f "$PODS_DIR/homepod/tailscale/tailscaled.state" 
     exit 1
 fi
 
+# --- container network MTU (nested VMs, e.g. apple/container guests, have
+# MTU 1280; containers defaulting to larger MTUs silently blackhole TLS) ---
+iface=$(awk '$2=="00000000" {print $1; exit}' /proc/net/route 2>/dev/null || true)
+host_mtu=$(cat "/sys/class/net/${iface:-eth0}/mtu" 2>/dev/null || echo 1500)
+if [[ "$host_mtu" -lt 1500 ]] && ! grep -qs "network_cmd_options" /etc/containers/containers.conf 2>/dev/null; then
+    echo "Host MTU is $host_mtu - matching container network MTU..."
+    printf '[engine]\nnetwork_cmd_options=["mtu=%s"]\n' "$host_mtu" >> /etc/containers/containers.conf
+fi
+
 # --- podman API socket (the controller drives the host through it) ---
 if [[ ! -S "$SOCKET" ]]; then
     echo "Starting podman API socket..."
