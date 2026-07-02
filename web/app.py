@@ -206,8 +206,19 @@ def do_install(form):
         timeout=300,
     )
     out = html.escape(result.stdout + result.stderr)
-    status = "installed - use start on the dashboard" if result.returncode == 0 else "FAILED"
-    return page(f"Install {name}: {status}", f"<pre>{out}</pre>")
+    if result.returncode != 0:
+        return page(f"Install {name}: FAILED", f"<pre>{out}</pre>")
+
+    start_button = (
+        f"<form method='post' action='/action'>"
+        f"<input type='hidden' name='service' value='{html.escape(name)}'>"
+        f"<button name='do' value='start'>Start {html.escape(name)} now</button>"
+        f"</form>"
+        "<p>Installing only generated the pod - it is not running until started."
+        " Starting pulls the image and enrolls on the tailnet, so it can take"
+        " a few minutes.</p>"
+    )
+    return page(f"Install {name}: installed", start_button + f"<pre>{out}</pre>")
 
 
 def do_action(form):
