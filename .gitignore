@@ -3,3 +3,6 @@
 .error.log
 .last-config.json
 cleanup.sh
+
+# Local session context - not for the public repo
+CLAUDE.md
