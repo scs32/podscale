@@ -72,10 +72,22 @@ EOF
         fi
 
         cat << EOF
-# Start Tailscale first with a unique hostname for this service
+# Start Tailscale first with a unique hostname for this service.
+#
+# --network podman (the default bridge) gives every sidecar its OWN routable
+# IP, so Tailscale nodes discover each other and connect DIRECTLY. Without it
+# (slirp4netns default on rootless/nested hosts) every pod thinks it is
+# 10.0.2.100 and ALL tailnet traffic relays through DERP at ~14 KB/s.
+# TS_USERSPACE=false uses a kernel TUN device (throughput + MTU control).
+# TS_DEBUG_MTU=1200 keeps WireGuard UDP (MTU+80) inside a 1280-byte host
+# link (nested VMs); harmless on 1500-MTU hosts.
+# The mkdir works around a podman 4.x rootless bug: bridge IPAM opens its db
+# under a staging /run that is torn down with the last bridge container.
 echo "Starting Tailscale..."
+mkdir -p /run/libpod/rootless-netns/run/containers/storage/networks 2>/dev/null || true
 podman run -d \\
   --name tailscale-$service \\
+  --network podman \\
   --cap-add NET_ADMIN --cap-add NET_RAW \\
   --device /dev/net/tun \\
   -v "\$(pwd)/tailscale:/var/lib/tailscale" \\
@@ -89,6 +101,8 @@ EOF
         cat << EOF
   -e TS_AUTHKEY="\$(cat "\$TS_AUTHKEY_FILE" 2>/dev/null || true)" \\
   -e TS_STATE_DIR=/var/lib/tailscale \\
+  -e TS_USERSPACE=false \\
+  -e TS_DEBUG_MTU=1200 \\
   -e TS_HOSTNAME="$service" \\
   $ts_image
 

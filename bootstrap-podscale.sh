@@ -62,6 +62,11 @@ if [ ! -f /dev/shm/pods-booted ]; then
   touch /dev/shm/pods-booted
 fi
 
+# podman 4.x rootless bridge bug: IPAM db opens under this staging /run,
+# which does not exist after a wipe / full-fleet stop. Must precede any
+# bridge-network container start or they fail with an IPAM error.
+mkdir -p /run/libpod/rootless-netns/run/containers/storage/networks 2>/dev/null || true
+
 mkdir -p /run/podman
 if [ ! -S /run/podman/podman.sock ]; then
   nohup podman system service --time=0 unix:///run/podman/podman.sock >/var/log/podman-api.log 2>&1 &
@@ -100,8 +105,12 @@ podman rm -f podscale 2>/dev/null || true
 podman rm -f tailscale-podscale 2>/dev/null || true
 
 echo "Starting Tailscale sidecar..."
+# --network podman + kernel TUN + MTU 1200: direct (non-DERP) tailnet paths
+# on rootless/nested hosts; see the sidecar notes in generate-run-template.sh.
+mkdir -p /run/libpod/rootless-netns/run/containers/storage/networks 2>/dev/null || true
 podman run -d \
   --name tailscale-podscale \
+  --network podman \
   --cap-add NET_ADMIN --cap-add NET_RAW \
   --device /dev/net/tun \
   -v "$PODS_DIR/podscale/tailscale:/var/lib/tailscale" \
@@ -109,6 +118,8 @@ podman run -d \
   -e TS_SERVE_CONFIG=/config/serve.json \
   -e TS_AUTHKEY="$(cat "$KEY_FILE" 2>/dev/null || true)" \
   -e TS_STATE_DIR=/var/lib/tailscale \
+  -e TS_USERSPACE=false \
+  -e TS_DEBUG_MTU=1200 \
   -e TS_HOSTNAME="podscale" \
   "$TS_IMAGE"
 
@@ -120,11 +131,14 @@ if ! podman ps --format '{{.Names}}' | grep -q '^tailscale-podscale$'; then
 fi
 
 echo "Starting Podscale controller..."
+# /run/libpod is mounted so run.sh's IPAM-staging mkdir (see the sidecar
+# notes above) lands on the HOST when the controller drives pod starts.
 podman run -d \
   --name podscale \
   --network container:tailscale-podscale \
   -v "$PODS_DIR:$PODS_DIR" \
   -v "$SOCKET:$SOCKET" \
+  -v /run/libpod:/run/libpod \
   -e CONTAINER_HOST="unix://$SOCKET" \
   -e PODS_DIR="$PODS_DIR" \
   --restart unless-stopped \
