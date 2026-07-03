@@ -112,7 +112,6 @@ def config_from_info(info):
         "network_mode": info.get("network_mode", "bridge"),
         "ports": info.get("ports", {}),
         "restart_policy": info.get("restart_policy", "unless-stopped"),
-        "include_npm": info.get("include_npm", "no"),
         "include_tailscale": info.get("include_tailscale", "no"),
         "include_https": info.get("include_https", "no"),
         "auth_key_file": info.get("auth_key_file", ""),
@@ -200,7 +199,7 @@ def op_install(req):
     """Generate a pod from an install request.
 
     req: name, custom(bool), image, command, ports, environment, volumes,
-         shares(list of names), tailscale(bool), https(bool), npm(bool),
+         shares(list of names), tailscale(bool), https(bool),
          authkey, network_mode, restart_policy.
     Returns {ok, name, error, output}. error set => rejected before the engine;
     ok False with output set => create.sh failed.
@@ -216,7 +215,6 @@ def op_install(req):
             return {"ok": False, "name": name, "error": "An image is required.", "output": ""}
 
     tailscale = bool(req.get("tailscale"))
-    npm = bool(req.get("npm"))
     https = bool(req.get("https")) and tailscale
 
     auth_key_file = ""
@@ -251,7 +249,6 @@ def op_install(req):
         "network_mode": network_mode,
         "ports": req.get("ports") or {},
         "restart_policy": req.get("restart_policy", "unless-stopped"),
-        "include_npm": "yes" if npm else "no",
         "include_tailscale": "yes" if tailscale else "no",
         "include_https": "yes" if https else "no",
         "auth_key_file": auth_key_file,
@@ -407,7 +404,6 @@ def _install_req_from_json(data):
             "shares": data.get("shares", []),
             "tailscale": bool(data.get("tailscale", True)),
             "https": bool(data.get("https", True)),
-            "npm": bool(data.get("npm", False)),
             "authkey": data.get("authkey", ""),
         }, None
     spec = load_services().get(name)
@@ -430,7 +426,6 @@ def _install_req_from_json(data):
         "shares": data.get("shares", []),
         "tailscale": bool(data.get("tailscale", True)),
         "https": bool(data.get("https", True)),
-        "npm": bool(data.get("npm", False)),
         "authkey": data.get("authkey", ""),
     }, None
 

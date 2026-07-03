@@ -58,7 +58,7 @@ r = app.op_install({
     "command": "sleep infinity", "ports": {"8080": "8080"}, "environment": {},
     "volumes": {"/config": f"{pods}/testpod/config"},
     "network_mode": "bridge", "restart_policy": "unless-stopped",
-    "shares": ["media"], "tailscale": False, "https": False, "npm": False,
+    "shares": ["media"], "tailscale": False, "https": False,
     "authkey": "",
 })
 check(r["ok"], "custom pod install with share succeeds")

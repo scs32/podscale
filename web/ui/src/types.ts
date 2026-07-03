@@ -75,6 +75,5 @@ export interface InstallRequest {
   shares?: string[];
   tailscale?: boolean;
   https?: boolean;
-  npm?: boolean;
   authkey?: string;
 }

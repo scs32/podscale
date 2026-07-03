@@ -18,7 +18,6 @@ export function InstallForm() {
   const [picked, setPicked] = useState<string[]>([]);
   const [tailscale, setTailscale] = useState(true);
   const [https, setHttps] = useState(true);
-  const [npm, setNpm] = useState(false);
   const [authkey, setAuthkey] = useState("");
 
   const [busy, setBusy] = useState(false);
@@ -54,7 +53,6 @@ export function InstallForm() {
           shares: picked,
           tailscale,
           https,
-          npm,
           authkey,
         }),
       );
@@ -100,9 +98,6 @@ export function InstallForm() {
             onChange={setHttps}
           >
             HTTPS via <code>tailscale serve</code> — https://{item.name}.&lt;tailnet&gt;.ts.net
-          </Toggle>
-          <Toggle checked={npm} onChange={setNpm}>
-            Bundle Nginx Proxy Manager
           </Toggle>
           {tailscale && (
             <Field
