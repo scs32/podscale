@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import type { Share, ShareResult } from "../types";
 import { api } from "../api";
 import { Field } from "../components/Form";
-import { Alert } from "../components/Alert";
+import { FlashView, useFlash } from "../components/Flash";
 
 // Defining shared folders only. Attaching a share to a pod happens in the
 // pod's Edit popup on the dashboard.
 export function Shares() {
   const [shares, setShares] = useState<Share[]>([]);
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const { flash, show, clear } = useFlash();
 
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
@@ -20,11 +20,11 @@ export function Shares() {
   }, []);
 
   useEffect(() => {
-    refresh().catch((e) => setMsg({ kind: "err", text: String(e) }));
+    refresh().catch((e) => show({ kind: "err", text: String(e) }));
   }, [refresh]);
 
   function report(r: ShareResult) {
-    setMsg(
+    show(
       r.ok
         ? { kind: "ok", text: r.message ?? "Done." }
         : { kind: "err", text: r.error ?? "Failed." },
@@ -49,11 +49,7 @@ export function Shares() {
         dashboard.
       </p>
 
-      {msg && (
-        <div style={{ marginTop: "var(--sp-5)" }}>
-          <Alert kind={msg.kind}>{msg.text}</Alert>
-        </div>
-      )}
+      <FlashView flash={flash} onClose={clear} />
 
       <div className="section-title">Defined shares</div>
       {shares.length === 0 ? (

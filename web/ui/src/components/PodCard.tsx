@@ -3,8 +3,18 @@ import type { Pod } from "../types";
 import { api } from "../api";
 import { PodGlyph, SpinnerIcon } from "./Icons";
 
+const BUSY_LABEL: Record<string, string> = {
+  start: "starting…",
+  stop: "stopping…",
+  update: "updating…",
+  remove: "removing…",
+  reconfigure: "applying config…",
+};
+
 // State is conveyed by the card tint (green running / amber stopped / red
-// crashed) — see .pod-card--* in the stylesheet. No badge.
+// crashed). `pod.busy` is the server's in-flight action registry, so a
+// transition started elsewhere (another view, another tab, before a reload)
+// still locks this card and shows what's happening.
 export function PodCard({
   pod,
   onChanged,
@@ -28,6 +38,8 @@ export function PodCard({
     }
   }
 
+  const serverBusy = pod.busy; // in-flight on the server (any client)
+  const locked = !!busy || !!serverBusy;
   const running = pod.state === "running";
 
   return (
@@ -44,13 +56,16 @@ export function PodCard({
             </div>
           )}
         </div>
+        {serverBusy && !busy && (
+          <span className="chip chip--busy">{BUSY_LABEL[serverBusy] ?? serverBusy}</span>
+        )}
       </div>
 
       <div className="pod-card__foot">
         {running ? (
           <button
             className={"btn btn--secondary btn--sm" + (busy ? " btn--loading" : "")}
-            disabled={!!busy || pod.controller}
+            disabled={locked || pod.controller}
             title={pod.controller ? "The controller can't stop itself" : undefined}
             onClick={() => run("stop")}
           >
@@ -60,7 +75,7 @@ export function PodCard({
         ) : (
           <button
             className={"btn btn--primary btn--sm" + (busy === "start" ? " btn--loading" : "")}
-            disabled={!!busy}
+            disabled={locked}
             onClick={() => run("start")}
           >
             {busy === "start" && <SpinnerIcon className="btn-icon" />}
@@ -72,7 +87,7 @@ export function PodCard({
         </button>
         <button
           className="btn btn--ghost btn--sm"
-          disabled={!!busy || pod.controller}
+          disabled={locked || pod.controller}
           title={
             pod.controller
               ? "The controller can't reconfigure itself"
@@ -85,7 +100,7 @@ export function PodCard({
         {pod.update && (
           <button
             className={"btn btn--secondary btn--sm" + (busy === "update" ? " btn--loading" : "")}
-            disabled={!!busy}
+            disabled={locked}
             title="A newer image is available — pull it and recreate the pod"
             onClick={() => run("update")}
           >

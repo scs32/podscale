@@ -2,6 +2,9 @@
 
 export type PodState = "running" | "stopped" | "error";
 
+// In-flight server-side action on a pod (survives SPA reloads).
+export type PodAction = "start" | "stop" | "update" | "remove" | "reconfigure";
+
 export interface Pod {
   name: string;
   state: PodState;
@@ -11,6 +14,7 @@ export interface Pod {
   https: boolean;
   shares: string[];
   update: boolean; // newer image available (daily digest check)
+  busy: PodAction | null;
 }
 
 // GET /api/network — per-pod networking settings + live tailnet identity.
@@ -24,6 +28,7 @@ export interface NetworkEntry {
   ports: Record<string, string>;
   ip: string; // tailnet IPv4, "" when sidecar not running
   dns_name: string; // MagicDNS name, "" when unknown
+  busy: PodAction | null;
 }
 
 export interface UpdatesInfo {

@@ -6,6 +6,7 @@ import { CatalogCard } from "../components/CatalogCard";
 import { SourcesPanel } from "../components/SourcesPanel";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Alert } from "../components/Alert";
+import { FlashView, useFlash } from "../components/Flash";
 import { RefreshIcon, SearchIcon, SpinnerIcon } from "../components/Icons";
 
 export function Catalog() {
@@ -17,7 +18,7 @@ export function Catalog() {
   const [refreshing, setRefreshing] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const { flash, show, clear } = useFlash();
 
   const load = useCallback(async () => {
     try {
@@ -34,11 +35,34 @@ export function Catalog() {
     load();
   }, [load]);
 
-  // Refresh = re-fetch sources + catalog AND force a full image-update check.
+  // Refresh = re-fetch sources + catalog AND force a full image-update
+  // check, staying busy until the server-side check actually finishes.
   async function refresh() {
     setRefreshing(true);
     try {
-      await Promise.all([load(), api.updatesRefresh().catch(() => {})]);
+      await api.updatesRefresh().catch(() => {});
+      const deadline = Date.now() + 120_000;
+      let updates = null;
+      while (Date.now() < deadline) {
+        try {
+          updates = await api.updates();
+          if (!updates.checking) break;
+        } catch {
+          /* transient */
+        }
+        await new Promise((res) => setTimeout(res, 2000));
+      }
+      await load();
+      if (updates) {
+        const n = Object.values(updates.images).filter((i) => i.update).length;
+        show({
+          kind: "ok",
+          text:
+            n > 0
+              ? `Update check complete — ${n} image${n === 1 ? "" : "s"} ha${n === 1 ? "s" : "ve"} updates (see the dashboard).`
+              : "Update check complete — everything is up to date.",
+        });
+      }
     } finally {
       setRefreshing(false);
     }
@@ -49,7 +73,7 @@ export function Catalog() {
     setRemoveBusy(true);
     try {
       const r = await api.action(removing, "remove");
-      setMsg(
+      show(
         r.ok
           ? { kind: "ok", text: `Removed ${removing}.` }
           : { kind: "err", text: r.error ?? r.output ?? "Remove failed." },
@@ -85,11 +109,7 @@ export function Catalog() {
           <Alert kind="err">{error}</Alert>
         </div>
       )}
-      {msg && (
-        <div style={{ marginTop: "var(--sp-5)" }}>
-          <Alert kind={msg.kind}>{msg.text}</Alert>
-        </div>
-      )}
+      <FlashView flash={flash} onClose={clear} />
 
       <div
         style={{

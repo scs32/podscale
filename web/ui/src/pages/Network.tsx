@@ -1,32 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import type { NetworkEntry } from "../types";
 import { api } from "../api";
-import { Alert } from "../components/Alert";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { FlashView, useFlash } from "../components/Flash";
 import { SpinnerIcon } from "../components/Icons";
 
-// Best-guess launch URLs for a pod. The MagicDNS name gets HTTPS on 443
-// when tailscale serve terminates TLS, else plain http on the service's
-// first port. The IP link goes straight at the service port (no cert
-// warnings — the ts.net certificate only matches the DNS name).
-function dnsUrl(e: NetworkEntry): string {
-  const port = Object.values(e.ports)[0];
-  if (e.https) return `https://${e.dns_name}`;
-  return port ? `http://${e.dns_name}:${port}` : `http://${e.dns_name}`;
-}
-
-function ipUrl(e: NetworkEntry): string {
-  const port = Object.values(e.ports)[0];
-  if (port) return `http://${e.ip}:${port}`;
-  return e.https ? `https://${e.ip}` : `http://${e.ip}`;
-}
+import { dnsUrl, ipUrl } from "../lib/urls";
 
 // Per-pod networking: tailnet identity (IP + MagicDNS name) and the
 // tailscale / HTTPS-serve switches. Flipping a switch re-renders the pod's
-// scripts and restarts it.
+// scripts and restarts it. Polls while mounted so enrolling sidecars and
+// busy pods settle into their real state without a reload.
 export function Network() {
   const [entries, setEntries] = useState<NetworkEntry[] | null>(null);
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const { flash, show, clear } = useFlash();
   const [busy, setBusy] = useState<string>(""); // "<pod>:<what>"
   const [confirmTs, setConfirmTs] = useState<string | null>(null); // pod pending TS disable
 
@@ -34,19 +21,21 @@ export function Network() {
     try {
       setEntries(await api.network());
     } catch (e) {
-      setMsg({ kind: "err", text: String(e) });
+      show({ kind: "err", text: String(e) });
     }
-  }, []);
+  }, [show]);
 
   useEffect(() => {
     refresh();
+    const t = setInterval(refresh, 10000); // settle enrolling/busy pods
+    return () => clearInterval(t);
   }, [refresh]);
 
   async function apply(pod: string, what: string, body: { tailscale?: boolean; https?: boolean }) {
     setBusy(`${pod}:${what}`);
     try {
       const r = await api.networkSet(pod, body);
-      setMsg(
+      show(
         r.ok
           ? { kind: "ok", text: `${pod}: network updated.` }
           : { kind: "err", text: r.error ?? r.output ?? "Failed." },
@@ -65,11 +54,7 @@ export function Network() {
         pod's scripts and restart it.
       </p>
 
-      {msg && (
-        <div style={{ marginTop: "var(--sp-5)" }}>
-          <Alert kind={msg.kind}>{msg.text}</Alert>
-        </div>
-      )}
+      <FlashView flash={flash} onClose={clear} />
 
       <div className="section-title">Pods</div>
       {entries === null ? (
@@ -122,6 +107,7 @@ export function Network() {
                 </div>
               </div>
               <div className="spacer" />
+              {e.busy && <span className="chip chip--busy">{e.busy}…</span>}
               {e.tailscale && (
                 <span className="chip chip--installed">tailscale</span>
               )}
@@ -141,7 +127,7 @@ export function Network() {
                           "btn btn--ghost btn--sm" +
                           (busy === `${e.name}:https` ? " btn--loading" : "")
                         }
-                        disabled={!!busy}
+                        disabled={!!busy || !!e.busy}
                         title={
                           e.https
                             ? "Stop terminating HTTPS via tailscale serve"
@@ -157,7 +143,7 @@ export function Network() {
                           "btn btn--danger btn--sm" +
                           (busy === `${e.name}:ts` ? " btn--loading" : "")
                         }
-                        disabled={!!busy}
+                        disabled={!!busy || !!e.busy}
                         title="Remove this pod's tailnet identity and publish its ports locally instead"
                         onClick={() => setConfirmTs(e.name)}
                       >
@@ -171,7 +157,7 @@ export function Network() {
                         "btn btn--secondary btn--sm" +
                         (busy === `${e.name}:ts` ? " btn--loading" : "")
                       }
-                      disabled={!!busy}
+                      disabled={!!busy || !!e.busy}
                       title="Give this pod its own tailnet identity (uses its existing Tailscale state or key file)"
                       onClick={() => apply(e.name, "ts", { tailscale: true, https: true })}
                     >

@@ -84,3 +84,9 @@ export const PulseIcon = (p: SVGProps<SVGSVGElement>) => (
     <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
   </svg>
 );
+
+export const CheckIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M20 6 9 17l-5-5" />
+  </svg>
+);

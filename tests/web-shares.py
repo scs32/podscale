@@ -139,6 +139,20 @@ check(app.op_reconfigure("homepod", {})["status"] == "refused",
 pods_status = {p["name"]: p for p in app.status_pods()}
 check(pods_status["testpod"]["state"] == "stopped", "status: never-started pod is stopped")
 check(pods_status["testpod"]["update"] is False, "status: no update flagged without cache")
+check(pods_status["testpod"]["busy"] is None, "status: idle pod reports busy=None")
+
+# --- in-flight op registry: busy pods refuse a second action ---
+check(app._op_begin("testpod", "start") is None, "op registry: claim succeeds")
+check(app._op_begin("testpod", "stop") == "start", "op registry: second claim sees conflict")
+check({p["name"]: p for p in app.status_pods()}["testpod"]["busy"] == "start",
+      "status: in-flight action visible as busy")
+r = app.op_action("testpod", "stop")
+check(r["status"] == "busy" and "already in progress" in r["error"],
+      "action on busy pod refused")
+check(app.op_reconfigure("testpod", {"image": "docker.io/alpine:latest"})["status"] == "busy",
+      "reconfigure on busy pod refused")
+app._op_end("testpod")
+check(app.pod_busy("testpod") is None, "op registry: claim released")
 check(app.pod_state("x", {"x": ("exited", 3)}) == "error", "pod_state: non-zero exit = error")
 check(app.pod_state("x", {"x": ("running", 0)}) == "running", "pod_state: running")
 check(app.pod_state("x", {}) == "stopped", "pod_state: absent container = stopped")

@@ -58,6 +58,33 @@ UPDATES_TTL = 24 * 3600
 _updates_lock = threading.Lock()
 _updates_running = False
 
+# In-flight pod actions (start/stop/update/reconfigure/remove). Actions run
+# synchronously inside their request thread, so this registry is accurate;
+# it lets every view (and a reloaded SPA) see that a pod is mid-transition,
+# and lets us refuse a second, racing action on the same pod.
+_pod_ops = {}  # name -> action
+_pod_ops_lock = threading.Lock()
+
+
+def _op_begin(name, action):
+    """Claim a pod for an action. Returns the conflicting action, or None."""
+    with _pod_ops_lock:
+        current = _pod_ops.get(name)
+        if current:
+            return current
+        _pod_ops[name] = action
+        return None
+
+
+def _op_end(name):
+    with _pod_ops_lock:
+        _pod_ops.pop(name, None)
+
+
+def pod_busy(name):
+    with _pod_ops_lock:
+        return _pod_ops.get(name)
+
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
@@ -353,6 +380,7 @@ def status_pods():
             "https": info.get("include_https") == "yes",
             "shares": info.get("shares", []),
             "update": bool(updates.get(image, {}).get("update")),
+            "busy": pod_busy(name),
         })
     return out
 
@@ -494,6 +522,19 @@ def op_action(name, action):
                 "error": f"Not {action.replace('stop', 'stopping').replace('remove', 'removing')}"
                          " the controller from itself.", "output": ""}
 
+    if action == "logs":  # read-only: no need to claim the pod
+        return _run_action(name, action)
+    conflict = _op_begin(name, action)
+    if conflict:
+        return {"ok": False, "name": name, "action": action, "status": "busy",
+                "error": f"{conflict} is already in progress for {name}.", "output": ""}
+    try:
+        return _run_action(name, action)
+    finally:
+        _op_end(name)
+
+
+def _run_action(name, action):
     svc_dir = os.path.join(PODS_DIR, name)
     if action == "start":
         r = subprocess.run(["sh", "./run.sh"], cwd=svc_dir, capture_output=True,
@@ -607,6 +648,17 @@ def op_reconfigure(name, data):
         return {"ok": False, "name": name, "action": "reconfigure", "status": "error",
                 "error": "An image is required.", "output": ""}
 
+    conflict = _op_begin(name, "reconfigure")
+    if conflict:
+        return {"ok": False, "name": name, "action": "reconfigure", "status": "busy",
+                "error": f"{conflict} is already in progress for {name}.", "output": ""}
+    try:
+        return _run_reconfigure(name, data, info, image)
+    finally:
+        _op_end(name)
+
+
+def _run_reconfigure(name, data, info, image):
     tailscale = bool(data.get("tailscale"))
     https = bool(data.get("https")) and tailscale
 
@@ -685,6 +737,7 @@ def network_entry(name, ps):
         "ports": info.get("ports", {}),
         "ip": "",
         "dns_name": "",
+        "busy": pod_busy(name),
     }
     if ts and ps.get(f"tailscale-{name}", ("", 0))[0] == "running":
         r = podman("exec", f"tailscale-{name}", "tailscale", "status",
@@ -1043,12 +1096,14 @@ def api_post(path, data):
     m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/action", path)
     if m:
         result = op_action(m.group(1), (data.get("do") or "").strip())
-        return (200 if result["ok"] else 400), result
+        code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
+        return code, result
 
     m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/config", path)
     if m:
         result = op_reconfigure(m.group(1), data)
-        return (200 if result["ok"] else 400), result
+        code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
+        return code, result
 
     if path == "/api/updates/refresh":
         return 200, {"ok": True, "status": maybe_check_updates(force=True)}

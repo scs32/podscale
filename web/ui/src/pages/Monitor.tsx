@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { MonitorStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
+import { FlashView, useFlash } from "../components/Flash";
 import { Field } from "../components/Form";
 import { PodGlyph, PulseIcon, SpinnerIcon } from "../components/Icons";
 
@@ -18,7 +19,7 @@ interface Beam {
 
 export function Monitor() {
   const [status, setStatus] = useState<MonitorStatus | null>(null);
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const { flash, show, clear } = useFlash();
   const [busy, setBusy] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [beam, setBeam] = useState<Beam | null>(null);
@@ -40,19 +41,21 @@ export function Monitor() {
       setStatus(s);
       if (!s.configured && s.kuma_url) setUrl((u) => u || s.kuma_url);
     } catch (e) {
-      setMsg({ kind: "err", text: String(e) });
+      show({ kind: "err", text: String(e) });
     }
   }, []);
 
   useEffect(() => {
     refresh();
+    const t = setInterval(refresh, 15000); // keep monitored flags + URLs current
+    return () => clearInterval(t);
   }, [refresh]);
 
   async function connect() {
     setConnecting(true);
     try {
       const r = await api.monitorSetup({ url: url.trim(), username, password });
-      setMsg(
+      show(
         r.ok
           ? {
               kind: "ok",
@@ -88,7 +91,7 @@ export function Monitor() {
       const r = await api.monitorPod(pod, "add");
       // let the animation land before resolving it
       await new Promise((res) => setTimeout(res, 1100));
-      setMsg(
+      show(
         r.ok
           ? { kind: "ok", text: `${pod} is now monitored by Kuma.` }
           : { kind: "err", text: r.error ?? "Failed to add the monitor." },
@@ -105,7 +108,7 @@ export function Monitor() {
     setBusy(pod);
     try {
       const r = await api.monitorPod(pod, "remove");
-      setMsg(
+      show(
         r.ok
           ? { kind: "ok", text: `Removed the ${pod} monitor.` }
           : { kind: "err", text: r.error ?? "Failed to remove the monitor." },
@@ -132,11 +135,7 @@ export function Monitor() {
         Drag a pod onto the Kuma card to start monitoring it.
       </p>
 
-      {msg && (
-        <div style={{ marginTop: "var(--sp-5)" }}>
-          <Alert kind={msg.kind}>{msg.text}</Alert>
-        </div>
-      )}
+      <FlashView flash={flash} onClose={clear} />
       {status?.error && (
         <div style={{ marginTop: "var(--sp-5)" }}>
           <Alert kind="err">{status.error}</Alert>

@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ShareResult, Source } from "../types";
 import { api } from "../api";
 import { Field } from "./Form";
-import { Alert } from "./Alert";
+import { FlashView, useFlash } from "./Flash";
 
 // Rendered inside the catalog's Sources modal (the modal owns the title).
 export function SourcesPanel({
@@ -15,10 +15,10 @@ export function SourcesPanel({
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const { flash, show, clear } = useFlash();
 
   function report(r: ShareResult) {
-    setMsg(
+    show(
       r.ok
         ? { kind: "ok", text: r.message ?? "Done." }
         : { kind: "err", text: r.error ?? "Failed." },
@@ -47,11 +47,7 @@ export function SourcesPanel({
         appear in the catalog alongside the built-in ones.
       </p>
 
-      {msg && (
-        <div style={{ marginBottom: "var(--sp-3)" }}>
-          <Alert kind={msg.kind}>{msg.text}</Alert>
-        </div>
-      )}
+      <FlashView flash={flash} onClose={clear} />
 
       {sources.length > 0 && (
         <div className="row-list" style={{ marginBottom: "var(--sp-5)" }}>

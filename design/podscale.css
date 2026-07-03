@@ -280,6 +280,17 @@ a:hover { text-decoration: underline; }
 .catalog-card__meta { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--faint); word-break: break-all; }
 .chip { font-size: var(--fs-xs); font-weight: var(--fw-medium); color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-full); padding: 2px 9px; }
 .chip--installed { color: var(--ok); background: var(--ok-tint); border-color: rgba(52,211,153,.3); }
+.chip--busy {
+  color: var(--warn); background: var(--warn-tint); border-color: rgba(251,191,36,.3);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+/* Flash messages: dismissable, successes auto-expire (see Flash.tsx) */
+.flash__close {
+  background: none; border: none; color: inherit; opacity: .65; cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 0 2px; flex: none;
+}
+.flash__close:hover { opacity: 1; }
 
 /* =========================================================
    Forms
