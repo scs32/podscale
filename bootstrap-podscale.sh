@@ -67,8 +67,11 @@ fi
 # bridge-network container start or they fail with an IPAM error.
 mkdir -p /run/libpod/rootless-netns/run/containers/storage/networks 2>/dev/null || true
 
+# /run is NOT tmpfs in these guests, so a stale socket FILE survives a VM
+# restart while the service behind it is gone — probe the API, not the path.
 mkdir -p /run/podman
-if [ ! -S /run/podman/podman.sock ]; then
+if ! podman --url unix:///run/podman/podman.sock info >/dev/null 2>&1; then
+  rm -f /run/podman/podman.sock
   nohup podman system service --time=0 unix:///run/podman/podman.sock >/var/log/podman-api.log 2>&1 &
   sleep 2
 fi
