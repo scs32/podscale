@@ -20,11 +20,13 @@ export function PodCard({
   pod,
   onChanged,
   onLogs,
+  onExec,
   onEdit,
 }: {
   pod: Pod;
   onChanged: () => void;
   onLogs: (name: string) => void;
+  onExec: (name: string) => void;
   onEdit: (name: string) => void;
 }) {
   const [busy, setBusy] = useState<"" | "start" | "stop" | "update">("");
@@ -85,6 +87,14 @@ export function PodCard({
         )}
         <button className="btn btn--ghost btn--sm" onClick={() => onLogs(pod.name)}>
           Logs
+        </button>
+        <button
+          className="btn btn--ghost btn--sm"
+          disabled={!running}
+          title={running ? "Run a one-shot command inside the container" : "Pod isn't running"}
+          onClick={() => onExec(pod.name)}
+        >
+          Shell
         </button>
         <button
           className="btn btn--ghost btn--sm"

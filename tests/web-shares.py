@@ -171,6 +171,22 @@ check(app.pod_state("x", {"x": ("exited", 3)}) == "error", "pod_state: non-zero 
 check(app.pod_state("x", {"x": ("running", 0)}) == "running", "pod_state: running")
 check(app.pod_state("x", {}) == "stopped", "pod_state: absent container = stopped")
 
+# --- exec: one-shot command in a pod (stubbed podman exec exits 0) ---
+r = app.op_exec("testpod", "echo hi")
+check(r["ok"] and r["action"] == "exec", "exec: runs against a deployed pod")
+check("exec testpod sh -c echo hi" in open(stub_log).read(),
+      "exec: shells out via podman exec sh -c")
+check(app.op_exec("nope", "ls")["error"] == "Unknown service.",
+      "exec: unknown pod rejected")
+check(app.op_exec("testpod", "  ")["error"] == "Empty command.",
+      "exec: empty command rejected")
+check("too long" in app.op_exec("testpod", "x" * 10001)["error"],
+      "exec: oversized command rejected")
+app._op_begin("testpod", "update")
+check(app.op_exec("testpod", "ls")["status"] == "busy",
+      "exec: refused while a lifecycle op is in flight")
+app._op_end("testpod")
+
 # --- network status + set ---
 net = {e["name"]: e for e in app.status_network()}
 check(net["testpod"]["tailscale"] is True and net["testpod"]["ip"] == "",

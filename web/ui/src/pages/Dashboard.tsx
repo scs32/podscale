@@ -4,6 +4,7 @@ import type { FleetAction, Pod } from "../types";
 import { api } from "../api";
 import { PodCard } from "../components/PodCard";
 import { LogsModal } from "../components/LogsModal";
+import { ExecModal } from "../components/ExecModal";
 import { EditModal } from "../components/EditModal";
 import { Alert } from "../components/Alert";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -14,6 +15,7 @@ export function Dashboard() {
   const [pods, setPods] = useState<Pod[] | null>(null);
   const [error, setError] = useState<string>("");
   const [logsFor, setLogsFor] = useState<string | null>(null);
+  const [execFor, setExecFor] = useState<string | null>(null);
   const [editFor, setEditFor] = useState<string | null>(null);
   const [confirmFleet, setConfirmFleet] = useState<FleetAction | null>(null);
   const [fleetBusy, setFleetBusy] = useState<FleetAction | "">("");
@@ -161,6 +163,7 @@ export function Dashboard() {
               pod={pod}
               onChanged={refresh}
               onLogs={setLogsFor}
+              onExec={setExecFor}
               onEdit={setEditFor}
             />
           ))}
@@ -191,6 +194,7 @@ export function Dashboard() {
       )}
 
       {logsFor && <LogsModal name={logsFor} onClose={() => setLogsFor(null)} />}
+      {execFor && <ExecModal name={execFor} onClose={() => setExecFor(null)} />}
       {editFor && (
         <EditModal
           name={editFor}

@@ -45,6 +45,9 @@ export const api = {
 
   logs: (name: string) => getJSON<ActionResult>(`/api/pods/${name}/logs`),
 
+  exec: (name: string, cmd: string) =>
+    postJSON<ActionResult>(`/api/pods/${name}/exec`, { cmd }),
+
   action: (name: string, action: "start" | "stop" | "update" | "remove") =>
     postJSON<ActionResult>(`/api/pods/${name}/action`, { do: action }),
 

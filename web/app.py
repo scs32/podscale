@@ -587,6 +587,37 @@ def _run_action(name, action):
             "error": None, "output": output}
 
 
+def op_exec(name, cmd):
+    """Run a one-shot shell command inside a pod's main container.
+
+    Like logs, this is not claimed in the busy registry (it doesn't
+    conflict with lifecycle ops) — but it refuses to run while one is
+    mid-flight, since the container may be getting stopped or replaced.
+    The command string is a single argv element to `sh -c` inside the
+    container: arbitrary shell *inside* the pod is the feature; there is
+    no host-side shell to inject into.
+    """
+    if name not in deployed_services():
+        return {"ok": False, "name": name, "action": "exec", "status": "error",
+                "error": "Unknown service.", "output": ""}
+    if not isinstance(cmd, str) or not cmd.strip():
+        return {"ok": False, "name": name, "action": "exec", "status": "error",
+                "error": "Empty command.", "output": ""}
+    if len(cmd) > 10000:
+        return {"ok": False, "name": name, "action": "exec", "status": "error",
+                "error": "Command too long.", "output": ""}
+    busy = pod_busy(name)
+    if busy:
+        return {"ok": False, "name": name, "action": "exec", "status": "busy",
+                "error": f"{busy} is already in progress for {name}.", "output": ""}
+    r = podman("exec", name, "sh", "-c", cmd, timeout=30)
+    output = r.stdout + r.stderr
+    ok = r.returncode == 0
+    return {"ok": ok, "name": name, "action": "exec",
+            "status": "ok" if ok else f"exit {r.returncode}",
+            "error": None, "output": output}
+
+
 def op_fleet(action):
     """stop / start / restart every deployed pod except the controller.
 
@@ -1141,6 +1172,12 @@ def api_post(path, data):
     m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/action", path)
     if m:
         result = op_action(m.group(1), (data.get("do") or "").strip())
+        code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
+        return code, result
+
+    m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/exec", path)
+    if m:
+        result = op_exec(m.group(1), data.get("cmd") or "")
         code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
         return code, result
 
