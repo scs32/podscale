@@ -1,170 +1,217 @@
-# Podscale ACL design — tag management + policy authoring
+# Podscale ACL design — capability tags + fenced policy authoring
 
-**Status: DESIGN ONLY (2026-07-05). Nothing here is implemented, and nothing
-here has been applied to the live tailnet.** This document consolidates the
-architecture decided during the 2026-07-05 backlog session into an executable
-spec for a future build. Executing sessions: do NOT call the Tailscale API,
-modify the live policy file, or create OAuth clients from this document alone.
+**Status: DESIGN ONLY (2026-07-05, revised same day after design review with
+Stephen). Nothing here is implemented, and nothing has been applied to the
+live tailnet.** Executing sessions: do NOT call the Tailscale API, modify the
+live policy file, or create OAuth clients from this document alone.
+
+**Design principles (locked):**
+1. Everything Podscale does is **tag-based** wherever possible — no reliance
+   on autogroups quirks, device ownership, or the shape of the human's
+   existing policy. It must work for the majority of tailnets, not one.
+2. Podscale owns **only its own fenced section** of the policy file and only
+   its own tag namespace. Blast radius is bounded by construction.
+3. **No tiers.** Access is per-service, granted explicitly per machine.
+4. Pods mutually trust each other: the fleet is **one trust zone**.
 
 ---
 
-## 0. Security prerequisite — controller lockdown (NON-NEGOTIABLE, FIRST)
+## 0. Security prerequisite — controller lockdown (FIRST, non-negotiable)
 
-Podscale's standing assumption is *tailnet-only = trusted*: the controller has
-no auth of its own, holds the podman socket, and is root-equivalent over the
-whole fleet. That assumption **breaks the moment the first family auth key is
-handed out** — every family device gets line-of-sight to the controller (and
-to Sonarr, and to everything else).
-
-The live policy today makes this worse, not better:
-
-- `grants: [{src: *, dst: *, ip: *}]` — default-ALLOW-all, flat trust.
-- A wide-open `tailscale.com/cap/tsidp` cap on that same grant
-  (`allow_admin_ui` + `allow_dcr`, users/resources `*`).
-
-So the **first** policy change — before any tag automation, before any family
-key exists — is:
-
-1. Replace the wildcard grant with a **default-deny skeleton** (§4).
-2. Lock the Podscale controller node to `tag:podscale_admin` sources only.
-3. Scope the tsidp cap to admin.
-
-Everything else in this document is gated behind that change. The stakes rise
-further once Podscale holds an OAuth client that can write the policy file
-(§3): a compromised controller could then rewrite the entire tailnet ACL.
-Mitigations in §5, but the primary control is that nothing untrusted can
-reach the controller in the first place.
+Podscale's standing assumption is *tailnet-only = trusted*: the controller
+has no auth, holds the podman socket, and is root-equivalent over the fleet.
+That breaks the moment the first non-admin auth key is handed out. Nothing
+below ships to users before the generated policy makes the controller
+(`tag:podscale-ctrl`) reachable only by the operator. The stakes rise again
+once the controller holds an OAuth client that can write the policy file: a
+compromised controller could rewrite the tailnet ACL. Mitigations in §5; the
+primary control is that non-admin machines can never reach the controller.
 
 ## 1. Division of labor
 
-- **Podscale = the authoring layer.** It compiles intent ("family can reach
-  media apps") into Tailscale grants and tag assignments.
-- **Tailscale = the enforcement layer.** The WireGuard packet filter enforces
-  the compiled policy at the network level.
-- **Podscale is NOT in the data path and must never become one.** Making
-  Podscale the enforcement point would mean becoming a reverse proxy, which
-  destroys the zero-published-ports / no-proxy architecture. Do not go there.
+- **Podscale = authoring.** Compiles intent ("Dave may reach sonarr") into
+  tags and grants.
+- **Tailscale = enforcement.** The WireGuard packet filter enforces it.
+- **Podscale is NOT in the data path and must never become a reverse proxy**
+  — that would destroy the zero-published-ports architecture.
+- Header-based per-user authz (`Tailscale-App-Capabilities`, WhoIs) only
+  works for capability-aware apps; for the standard catalog the enforcement
+  primitive is reachability. A later layer, not the foundation.
 
-For the standard catalog (Plex, Sonarr, …) the enforcement primitive is
-network reachability: *can this device reach that sidecar at all*. True
-per-user, header-based authz (`Tailscale-App-Capabilities` + WhoIs,
-`--accept-app-caps`, stable v1.92+) only works for capability-aware apps —
-a later layer, not the foundation.
+## 2. The tag model — identity tags + capability tags
 
-## 2. Tag model
+Everything lives under the `tag:podscale*` prefix. The prefix IS the
+ownership rule (§4).
 
-| Tag | On | Meaning |
+| Tag | Lives on | Meaning |
 |---|---|---|
-| `tag:podscale_admin` | Stephen's devices | may reach the controller + everything |
-| `tag:app-<svc>` | each pod's sidecar | per-service identity (fine-grained tier) |
-| `tag:tier-media` (etc.) | sidecars, grouped | access tier — the churn escape hatch |
-| `tag:family` / `tag:family-<person>` | family devices | who may reach which tier |
+| `tag:podscale` | every sidecar | fleet membership → intercom grant |
+| `tag:podscale-ctrl` | controller sidecar | never shareable (hard generator rule) |
+| `tag:podscale-svc-<name>` | that service's sidecar | what this node **is** |
+| `tag:podscale-user` | consumer machines | what this machine **is** (inventory; zero access by itself) |
+| `tag:podscale-can-<name>` | consumer machines | what this machine **may reach** (capability badge) |
+| `tag:podscale-public` | sidecars | funnel nodeAttr marker |
 
-Key facts that shaped this:
+Key decisions embedded here:
 
-- **Grants match tags EXACTLY** — no globs (`tag:app-*` is invalid), no
-  relational matching. Per-service isolation therefore means one grant line
-  per service, i.e. the grants block changes every time a service is added
-  or removed. That is automatable (§3) but churny.
-- **Tiers are the escape hatch:** `tag:tier-media` covering
-  plex/jellyfin/sonarr/radarr means adding a service = one device-tag call
-  into an existing tier, ZERO grant edits. Recommended default granularity;
-  per-service `tag:app-<svc>` grants only where a service genuinely needs
-  its own audience.
-- **Family devices are tagged devices, not users.** Auth-key-enrolled devices
-  have no Tailscale user identity in ACL terms (they're owned by their tags).
-  Per-person granularity = per-person tag buckets (`tag:family-grandma`).
-  Real per-user identity requires Tailscale user sharing/invites (a TS login
-  per person) — build the tag model first.
-- **Tagging is one-way:** tagging a device drops its user owner, and clearing
-  tags does not restore one. Acceptable for this model (family devices live
-  as tagged devices) — but document it wherever a tag is applied.
+- **Born tagged.** Tags ride the auth key, so devices are never user-owned
+  and the "tagging is one-way / drops the user owner" problem never arises.
+  Sidecar keys carry `tag:podscale` + `tag:podscale-svc-<name>`; handed-out
+  consumer keys carry `tag:podscale-user`. (Install already requires a key;
+  the flow barely changes. With the OAuth client, Podscale mints a fresh
+  single-use tagged key per install / per person — strictly better than
+  reusable-key handling.)
+- **Attribution lives in the key's tags.** There is NO device→auth-key
+  mapping in the Tailscale API (audit logs only). The tag on the key is how
+  Podscale knows what an enrolling device is. Consequence: **a reusable key
+  is an identity, not just a credential** — prefer single-use / short-expiry
+  keys minted per person, and surface group membership in the UI so
+  unexpected devices are visible.
+- **`can-<svc>` is deliberately distinct from `svc-<svc>`.** If a consumer
+  machine wore the sidecar's own tag, any `svc-X → svc-X` grant would be
+  symmetric and the pod could initiate connections to the consumer's
+  machine. `can- → svc-` keeps grants directional.
+- **One trust zone.** `tag:podscale → tag:podscale` lets any pod reach any
+  pod (sonarr→nzbget etc). Rationale: nobody will maintain a pod adjacency
+  matrix, and defaults we ship would be wrong for someone. A compromised pod
+  reaches other pods — and, by the prefix rule, nothing else on the tailnet.
+- **No tiers.** Considered and rejected: per-service capability badges give
+  finer granularity with no extra abstraction, and (see §3) sharing no
+  longer touches the policy file at all, which was the only argument tiers
+  had.
 
-## 3. Mechanics
+## 3. Grants — static per service; sharing is tag membership
 
-### Device tagging (membership)
-- `POST /api/v2/device/{id}/tags` — **REPLACES the whole tag set**, so every
-  write is read-modify-write. Serialize through the controller's existing
-  busy registry to avoid lost updates.
-- `tagOwners` must pre-authorize Podscale's OAuth identity for every tag it
-  will assign (one-time entries in the human-owned section of the policy).
+The generated grant block is mechanical and only changes on install/remove:
 
-### Policy file (grants)
-- `GET/POST /api/v2/tailnet/{tailnet}/acl` — HuJSON, **whole-file replace**
-  (no patch op), with `ETag` / `If-Match` optimistic concurrency and an
-  `/acl/validate` dry-run endpoint.
-- Podscale edits ONLY inside fenced markers:
+```jsonc
+// >>> PODSCALE MANAGED — do not edit; regenerated by podscale
+{"src": ["tag:podscale"],             "dst": ["tag:podscale"],             "ip": ["*"]},   // fleet intercom
+{"src": ["autogroup:admin"],          "dst": ["tag:podscale"],             "ip": ["*"]},   // operator → fleet
+{"src": ["tag:podscale-can-sonarr"],  "dst": ["tag:podscale-svc-sonarr"],  "ip": ["443"]}, // one line per
+{"src": ["tag:podscale-can-jellyfin"],"dst": ["tag:podscale-svc-jellyfin"],"ip": ["443"]}, // installed service
+// <<< PODSCALE MANAGED
+```
 
-  ```
-  // >>> podscale-managed grants — do not edit by hand
-  ...generated one-grant-per-service / per-tier lines...
-  // <<< podscale-managed grants
-  ```
+- **Install service** → add its `svc-`/`can-` grant line + tagOwners entries
+  (policy write). **Remove service** → delete them (policy write).
+- **Share / revoke** → add/remove `tag:podscale-can-<svc>` on the consumer's
+  device via `POST /api/v2/device/{id}/tags` — REPLACES the whole tag set,
+  so read-modify-write, serialized through the busy registry. **No policy
+  write.** Access changes are instant, low-blast-radius tag flips.
+- Under default-deny, `svc-sonarr` is reachable by: badge-holders, the
+  operator, and other pods. Nothing else. A `tag:podscale-user` key grants
+  access to exactly nothing until a badge is added.
+- Consumer grants are port-443-only (`tailscale serve` fronts every service).
+- The controller gets NO `can-` tag ever; `tag:podscale-ctrl` appears in no
+  consumer grant (generator hard-refuses).
+- Whether default-deny is in force is the tailnet owner's choice, outside
+  the fence. Our section behaves identically under allow-all (inert labels)
+  or default-deny (live policy); Podscale's docs recommend default-deny and
+  the onboarding flow should detect an allow-all wildcard grant and warn.
 
-  The POST body is literal HuJSON, so comments round-trip and the
-  human-owned sections survive regeneration.
-- Write cycle: `GET` (capture ETag) → regenerate the fenced block from the
-  deployed-pod list → `POST /acl/validate` → `POST` with `If-Match` → on
-  `412` refetch and retry. Serialize via the busy registry.
-- Add-service flow: create sidecar → tag it (`tag:app-<svc>` or into a tier)
-  via the device API → regenerate fenced grants → validate → POST. Reverse
-  on remove. ACLs recompute tailnet-wide in seconds.
+### The Users page (the UX this buys)
+
+Every device wearing `tag:podscale-user`, with a Podscale-side nickname
+registry (`$PODS_DIR/.users.json`, keyed by stable node ID — deliberately
+blurring machine/user for v1), last-seen from the devices API, and a row of
+per-service checkboxes. Checking "sonarr" on Dave's row = one tags API call.
+Per-person view of the per-service sharing moat.
+
+## 4. Owning our section — fences for mechanics, prefix for safety
+
+Two mechanisms, different jobs; both required:
+
+- **Comment fences = mechanical splice.** HuJSON round-trips comments (the
+  POST body is literal text), so Podscale does **line-level replacement**
+  between `// >>> PODSCALE MANAGED` … `// <<< PODSCALE MANAGED` markers —
+  one fenced block per section it manages (`grants`, `tagOwners`,
+  `nodeAttrs`). It never parses-and-reserializes the human's file: their
+  comments, ordering, and formatting survive byte-for-byte.
+- **The prefix = safety invariant.** Generator hard rule: nothing inside a
+  fence may reference a name outside `tag:podscale*`, with exactly two
+  whitelisted exceptions: `autogroup:admin` (operator src / tagOwners
+  values) and nothing else. Even a generator bug cannot grant access to the
+  human's other machines.
+- **Fail closed.** Missing fence pair, duplicate/nested markers, or fence
+  content violating the prefix rule → refuse to write and tell the human to
+  re-run **adopt** (the one-time step that appends fresh fenced blocks to
+  each section). Never guess; never touch anything outside the fences.
+
+Managed tagOwners + nodeAttrs blocks:
+
+```jsonc
+"tagOwners": {
+    // ...human-owned tags untouched...
+    // >>> PODSCALE MANAGED
+    "tag:podscale":              ["autogroup:admin"],
+    "tag:podscale-ctrl":         ["autogroup:admin"],
+    "tag:podscale-user":         ["autogroup:admin"],
+    "tag:podscale-public":       ["autogroup:admin"],
+    "tag:podscale-svc-sonarr":   ["autogroup:admin"],   // + per installed
+    "tag:podscale-can-sonarr":   ["autogroup:admin"],   //   service pair
+    // <<< PODSCALE MANAGED
+},
+"nodeAttrs": [
+    // >>> PODSCALE MANAGED
+    {"target": ["tag:podscale-public"], "attr": ["funnel"]},
+    // <<< PODSCALE MANAGED
+],
+```
+
+(When the OAuth client exists, its identity is added to the managed
+tagOwners values so Podscale may assign the tags it defines.)
+
+### Write cycle (policy file)
+`GET /api/v2/tailnet/{t}/acl` (capture `ETag`) → line-splice the fenced
+regions → `POST /acl/validate` (refuse on error) → `POST` with `If-Match` →
+on 412 refetch + regenerate + retry. Keep last-known-good policy as a local
+backup with one-call rollback.
 
 ### Credentials
-- An **OAuth client** (auto-refreshing) scoped to exactly `devices:write` +
-  `acl:write`, stored in the controller. This is what makes §0 non-negotiable.
+OAuth client scoped to exactly `devices:write` + `acl:write` (+ `auth_keys`
+for minting tagged keys), stored in the controller. This is what makes §0
+non-negotiable.
 
-## 4. Initial policy skeleton (drafted 2026-07-05, NOT applied)
+## 5. Safety rails (all mandatory)
 
-Shape only — exact HuJSON to be written at execution time against the then-
-current policy:
-
-- **default-deny** (remove `{src:*, dst:*, ip:*}`)
-- `tag:podscale_admin` → `*` (admin reaches everything)
-- controller node reachable from `tag:podscale_admin` ONLY
-- one worked tier example: `tag:family` → `tag:tier-media` on 443
-- tsidp cap scoped to admin (drop `allow_dcr`/`*` users+resources)
-- `tagOwners` for every tag in §2, including authorizing Podscale's OAuth
-  identity for the tags it manages
-- the empty fenced `podscale-managed grants` region, ready for takeover
-- **funnel nodeAttr** (§6) granted to the funnel-capable tag
-
-Existing `tagOwners` in the live policy already provisions many service tags
-(plex/jellyfin/sonarr/… → autogroup:admin) — today they have ZERO access
-effect (labels only, because the grant is `*→*`). The skeleton makes them
-meaningful; reconcile/rename toward the §2 scheme rather than keeping two
-naming systems.
-
-## 5. Safety rails (all mandatory in the implementation)
-
-- `POST /acl/validate` before every apply; refuse to POST on validation error.
-- Keep the last-known-good policy as a local backup before each write;
-  provide a one-call rollback.
-- Never generate outside the fence; refuse to apply if the fence markers are
-  missing or ambiguous (fail closed — tell the human).
-- `If-Match`/ETag on every POST; on 412 refetch + regenerate + retry, never
-  blind-overwrite.
-- OAuth client scoped minimally (§3); rotate if the controller is rebuilt.
+- Validate before every apply; fail closed on fence/prefix violations.
+- Last-known-good backup + rollback before each policy write.
+- ETag concurrency on every POST; never blind-overwrite.
+- Serialize all tag + policy writes through the busy registry.
+- Generator refuses: controller shares, non-prefix names in fences, consumer
+  grants on ports other than 443.
+- Minted keys: single-use / short-expiry by default; Users page surfaces
+  every `tag:podscale-user` device so unexpected enrollments are visible.
 
 ## 6. Funnel tie-in
 
-The shipped Funnel toggle (Network tab, `POST /api/network/<n>`) flips
-`AllowFunnel` in the pod's serve config — but tailscaled refuses unless the
-node carries the **`funnel` nodeAttr**. In the live policy only `tag:funnel`
-and two hardcoded IPs have it, so freshly-enrolled sidecars can't actually
-serve publicly yet (the toggle surfaces the refusal in its output).
+The shipped Make-public button (v0.3.0) flips `AllowFunnel` in the pod's
+serve config, but tailscaled refuses without the **`funnel` nodeAttr** on the
+node. The managed nodeAttrs block targets `tag:podscale-public`; making a pod
+public becomes: add `tag:podscale-public` to the sidecar (tags API) + flip
+AllowFunnel (already shipped). Fully tag-based — no hardcoded IPs — and the
+same device-tags call as sharing. Until the automation exists, the manual
+bridge is adding the sidecar's tailnet IP to a funnel nodeAttr by hand.
 
-The skeleton must therefore attach the funnel nodeAttr to a tag Podscale can
-assign (e.g. `tag:funnel` on the sidecar, added/removed by the same device-
-tagging flow when a pod is made public/private). That closes the loop: the
-toggle becomes fully self-service.
+## 7. Migration notes for the existing (Stephen's) tailnet
 
-## 7. Build order (when this is executed)
+- Current fleet sidecars are **user-owned and untagged** (enrolled with a
+  plain reusable key). Adoption = re-tag each sidecar via the devices API
+  (they become tag-owned — now the intended state) or re-enroll with a new
+  tagged key; future installs use tagged keys.
+- The live policy is a legacy pile (`grants *→*`, wide-open tsidp cap, a zoo
+  of unused tags) and is considered disposable: adopt can start from a clean
+  minimal file rather than preserving it. Scope/drop the tsidp cap during
+  the rewrite (check what actually consumes tsidp before removing
+  `allow_dcr`).
 
-1. §0 skeleton by hand in the admin console (human-authored, one time),
-   including the empty fenced region + tagOwners.
-2. OAuth client creation + storage in the controller.
-3. Device-tagging flow (tier membership on install/remove; funnel tag on
-   toggle).
+## 8. Build order (when executed)
+
+1. §0 + adopt: human applies the initial fenced skeleton (or clean minimal
+   policy) in the admin console; default-deny; controller locked down.
+2. OAuth client created + stored; tagged-key minting for installs.
+3. Device-tagging flow: sidecar svc tags on install, `can-` badges from the
+   Users page, `tag:podscale-public` from the Make-public button.
 4. Fenced-grant generator + ETag read-modify-write apply path.
-5. Only then: hand out the first family auth key.
+5. Only then: hand out the first `tag:podscale-user` key.
