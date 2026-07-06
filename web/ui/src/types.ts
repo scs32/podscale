@@ -144,6 +144,24 @@ export interface BackupEntry {
   reason: string;
 }
 
+// GET /api/users — machines wearing tag:podscale-user + their badges.
+export interface UserMachine {
+  id: string; // stable Tailscale node ID
+  hostname: string;
+  nickname: string;
+  os: string;
+  last_seen: string;
+  ip: string;
+  can: string[]; // services this machine may reach
+}
+
+export interface UsersStatus {
+  configured: boolean; // API token present on the controller
+  error: string | null;
+  users: UserMachine[];
+  services: string[]; // shareable (non-controller) deployed services
+}
+
 export interface ActionResult {
   ok: boolean;
   name: string;

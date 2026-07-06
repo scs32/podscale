@@ -294,6 +294,21 @@ check("no HTTPS serve" in app.op_network_set("noport", {"funnel": True})["error"
       "funnel: refused for a pod without a port")
 app.op_action("noport", "remove")
 
+# --- users: unconfigured (no API token) degrades gracefully, offline ---
+u = app.status_users()
+check(u["configured"] is False and u["users"] == [] and "testpod" in u["services"],
+      "users: unconfigured reports services, no users")
+check("homepod" not in u["services"], "users: controller never shareable")
+r = app.op_user_nick("nTESTNODE1", "Grandma")
+check(r["ok"] and app.load_user_nicks()["nTESTNODE1"] == "Grandma",
+      "users: nickname persisted in registry")
+app.op_user_nick("nTESTNODE1", "")
+check("nTESTNODE1" not in app.load_user_nicks(), "users: empty nickname clears entry")
+check(app.op_user_access("nTESTNODE1", "nope", True)["error"] == "Unknown service.",
+      "users: access toggle rejects unknown service")
+check("token" in app.op_user_access("nTESTNODE1", "testpod", True)["error"],
+      "users: access toggle without token fails cleanly")
+
 # --- monitor (Kuma) endpoints degrade gracefully without the client lib
 # (CI has no uptime-kuma-api; a configured image reports available=True) ---
 mon = app.status_monitor()

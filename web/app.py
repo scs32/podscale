@@ -595,6 +595,148 @@ def op_backup_delete(name, ts):
 
 
 # =========================================================================
+# Tailnet user machines (the Users page)
+#
+# A "user" here is a MACHINE wearing tag:podscale-user (enrolled with a
+# handed-out auth key). It can reach nothing until it also wears a
+# tag:podscale-can-<service> capability badge — flipping badges is one
+# device-tags API call and never touches the policy file. Nicknames are a
+# Podscale-side registry (.users.json, keyed by stable node ID).
+# See docs/acl-design.md.
+# =========================================================================
+TSAPI_FILE = os.path.join(PODS_DIR, ".tsapi.json")
+USERS_FILE = os.path.join(PODS_DIR, ".users.json")
+TS_USER_TAG = "tag:podscale-user"
+TS_CAN_PREFIX = "tag:podscale-can-"
+
+
+def _ts_token():
+    try:
+        with open(TSAPI_FILE) as f:
+            return (json.load(f).get("token") or "").strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def ts_api(method, path, body=None):
+    """Minimal Tailscale API client. Returns (status_code, parsed_or_text)."""
+    token = _ts_token()
+    if not token:
+        return 0, "no API token configured"
+    req = urllib.request.Request(
+        "https://api.tailscale.com/api/v2" + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json"},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            text = r.read().decode()
+            try:
+                return r.status, json.loads(text) if text.strip() else {}
+            except ValueError:
+                return r.status, text
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()[:500]
+    except (urllib.error.URLError, TimeoutError) as e:
+        return 0, f"tailscale API unreachable: {e}"
+
+
+def load_user_nicks():
+    try:
+        with open(USERS_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_user_nicks(data):
+    tmp = USERS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, USERS_FILE)
+
+
+def _shareable_services():
+    return [s for s in deployed_services() if s not in CONTROLLER_PODS]
+
+
+def status_users():
+    """User machines (tag:podscale-user) + their capability badges."""
+    services = _shareable_services()
+    if not _ts_token():
+        return {"configured": False, "error": None, "users": [],
+                "services": services}
+    code, data = ts_api("GET", "/tailnet/-/devices")
+    if code != 200:
+        return {"configured": True, "error": f"devices API: {data}",
+                "users": [], "services": services}
+    nicks = load_user_nicks()
+    users = []
+    for d in data.get("devices", []):
+        tags = d.get("tags") or []
+        if TS_USER_TAG not in tags:
+            continue
+        users.append({
+            "id": d.get("nodeId", ""),
+            "hostname": d.get("hostname", ""),
+            "nickname": nicks.get(d.get("nodeId", ""), ""),
+            "os": d.get("os", ""),
+            "last_seen": d.get("lastSeen", ""),
+            "ip": next((a for a in d.get("addresses", []) if "." in a), ""),
+            "can": sorted(t[len(TS_CAN_PREFIX):] for t in tags
+                          if t.startswith(TS_CAN_PREFIX)),
+        })
+    users.sort(key=lambda u: (u["nickname"] or u["hostname"]).lower())
+    return {"configured": True, "error": None, "users": users,
+            "services": services}
+
+
+def op_user_nick(node_id, nickname):
+    nickname = (nickname or "").strip()[:40]
+    nicks = load_user_nicks()
+    if nickname:
+        nicks[node_id] = nickname
+    else:
+        nicks.pop(node_id, None)
+    save_user_nicks(nicks)
+    return {"ok": True, "id": node_id, "nickname": nickname, "error": None}
+
+
+def op_user_access(node_id, service, allow):
+    """Grant/revoke a service to a user machine: flip its can-<svc> badge.
+
+    Tag membership only — the policy file is never touched here. The
+    device must already wear tag:podscale-user (we manage user machines,
+    nothing else), and the can- tag must exist in the tailnet policy's
+    tagOwners (it does for every installed service once the fenced
+    generator has run; errors from Tailscale are surfaced verbatim).
+    """
+    if service not in _shareable_services():
+        return {"ok": False, "id": node_id, "error": "Unknown service."}
+    code, dev = ts_api("GET", f"/device/{node_id}")
+    if code != 200:
+        return {"ok": False, "id": node_id, "error": f"device API: {dev}"}
+    tags = dev.get("tags") or []
+    if TS_USER_TAG not in tags:
+        return {"ok": False, "id": node_id,
+                "error": "Not a podscale user machine."}
+    badge = TS_CAN_PREFIX + service
+    new_tags = [t for t in tags if t != badge]
+    if allow:
+        new_tags.append(badge)
+    if sorted(new_tags) == sorted(tags):
+        return {"ok": True, "id": node_id, "error": None}  # no-op
+    code, resp = ts_api("POST", f"/device/{node_id}/tags",
+                        {"tags": sorted(new_tags)})
+    if code != 200:
+        return {"ok": False, "id": node_id, "error": f"tags API: {resp}"}
+    return {"ok": True, "id": node_id, "error": None}
+
+
+# =========================================================================
 # Core operations -- pure logic returning result dicts (no HTML)
 # =========================================================================
 def status_pods():
@@ -1406,6 +1548,8 @@ def api_get(path):
         return 200, {"network": status_network()}
     if path == "/api/monitor":
         return 200, status_monitor()
+    if path == "/api/users":
+        return 200, status_users()
     if path == "/api/shares":
         return 200, {"shares": status_shares()}
     if path == "/api/sources":
@@ -1513,6 +1657,17 @@ def api_post(path, data):
         result = op_network_set(m.group(1), data)
         code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
         return code, result
+
+    m = re.fullmatch(r"/api/users/([A-Za-z0-9]+)/access", path)
+    if m:
+        result = op_user_access(m.group(1), (data.get("service") or "").strip(),
+                                bool(data.get("allow")))
+        return (200 if result["ok"] else 400), result
+
+    m = re.fullmatch(r"/api/users/([A-Za-z0-9]+)", path)
+    if m:
+        result = op_user_nick(m.group(1), data.get("nickname"))
+        return (200 if result["ok"] else 400), result
 
     if path == "/api/monitor/setup":
         result = op_monitor_setup(data)

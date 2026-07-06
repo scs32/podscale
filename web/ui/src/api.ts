@@ -19,6 +19,7 @@ import type {
   ShareResult,
   Source,
   UpdatesInfo,
+  UsersStatus,
 } from "./types";
 
 async function getJSON<T>(path: string): Promise<T> {
@@ -90,6 +91,19 @@ export const api = {
     postJSON<ActionResult>(`/api/network/${pod}`, body),
 
   monitor: () => getJSON<MonitorStatus>("/api/monitor"),
+
+  users: () => getJSON<UsersStatus>("/api/users"),
+
+  userNick: (id: string, nickname: string) =>
+    postJSON<{ ok: boolean; error: string | null }>(`/api/users/${id}`, {
+      nickname,
+    }),
+
+  userAccess: (id: string, service: string, allow: boolean) =>
+    postJSON<{ ok: boolean; error: string | null }>(
+      `/api/users/${id}/access`,
+      { service, allow },
+    ),
 
   monitorSetup: (body: { url: string; username: string; password: string }) =>
     postJSON<{ ok: boolean; error: string | null; fresh?: boolean }>(

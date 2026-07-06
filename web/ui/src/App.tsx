@@ -7,6 +7,7 @@ import { CustomPod } from "./pages/CustomPod";
 import { Shares } from "./pages/Shares";
 import { Network } from "./pages/Network";
 import { Monitor } from "./pages/Monitor";
+import { Users } from "./pages/Users";
 
 function Layout() {
   return (
@@ -20,6 +21,7 @@ function Layout() {
           <Route path="/custom" element={<CustomPod />} />
           <Route path="/shares" element={<Shares />} />
           <Route path="/network" element={<Network />} />
+          <Route path="/users" element={<Users />} />
           <Route path="/monitor" element={<Monitor />} />
           <Route path="*" element={<Dashboard />} />
         </Routes>

@@ -6,6 +6,7 @@ import {
   ShareIcon,
   NetworkIcon,
   PulseIcon,
+  UsersIcon,
   GearIcon,
 } from "./Icons";
 
@@ -15,6 +16,7 @@ const NAV = [
   { to: "/custom", label: "Custom pod", icon: PlusIcon },
   { to: "/shares", label: "Shares", icon: ShareIcon },
   { to: "/network", label: "Network", icon: NetworkIcon },
+  { to: "/users", label: "Users", icon: UsersIcon },
   { to: "/monitor", label: "Monitor", icon: PulseIcon },
 ];
 
