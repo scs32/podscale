@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import type { CatalogItem, Source } from "../types";
+import type { BuiltinCatalog, CatalogItem, Source } from "../types";
 import { api } from "../api";
 import { CatalogCard } from "../components/CatalogCard";
 import { SourcesPanel } from "../components/SourcesPanel";
@@ -12,6 +12,7 @@ import { RefreshIcon, SearchIcon, SpinnerIcon } from "../components/Icons";
 export function Catalog() {
   const [catalog, setCatalog] = useState<CatalogItem[] | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
+  const [catalogs, setCatalogs] = useState<BuiltinCatalog[]>([]);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [showSources, setShowSources] = useState(false);
@@ -24,7 +25,8 @@ export function Catalog() {
     try {
       const [c, s] = await Promise.all([api.catalog(), api.sources()]);
       setCatalog(c);
-      setSources(s);
+      setSources(s.sources);
+      setCatalogs(s.catalogs);
       setError("");
     } catch (e) {
       setError(String(e));
@@ -200,7 +202,7 @@ export function Catalog() {
                 Close
               </button>
             </div>
-            <SourcesPanel sources={sources} onChanged={load} />
+            <SourcesPanel sources={sources} catalogs={catalogs} onChanged={load} />
           </div>
         </div>
       )}

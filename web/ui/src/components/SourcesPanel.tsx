@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ShareResult, Source } from "../types";
+import type { BuiltinCatalog, ShareResult, Source } from "../types";
 import { api } from "../api";
 import { Field } from "./Form";
 import { FlashView, useFlash } from "./Flash";
@@ -7,15 +7,29 @@ import { FlashView, useFlash } from "./Flash";
 // Rendered inside the catalog's Sources modal (the modal owns the title).
 export function SourcesPanel({
   sources,
+  catalogs,
   onChanged,
 }: {
   sources: Source[];
+  catalogs: BuiltinCatalog[];
   onChanged: () => void;
 }) {
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
+  const [catBusy, setCatBusy] = useState("");
   const { flash, show, clear } = useFlash();
+
+  async function toggleCatalog(c: BuiltinCatalog) {
+    setCatBusy(c.key);
+    try {
+      const r = await api.catalogSet(c.key, !c.enabled);
+      if (!r.ok) show({ kind: "err", text: r.error ?? "Failed." });
+      onChanged();
+    } finally {
+      setCatBusy("");
+    }
+  }
 
   function report(r: ShareResult) {
     show(
@@ -49,6 +63,34 @@ export function SourcesPanel({
 
       <FlashView flash={flash} onClose={clear} />
 
+      <div className="section-title" style={{ marginTop: 0 }}>Built-in catalogs</div>
+      <p className="field__hint" style={{ margin: "0 0 var(--sp-3)" }}>
+        The media catalog is always on. Opt into more categories:
+      </p>
+      <div className="row-list" style={{ marginBottom: "var(--sp-5)" }}>
+        {catalogs.map((c) => (
+          <label
+            key={c.key}
+            className="row card"
+            style={{ cursor: catBusy ? "wait" : "pointer" }}
+          >
+            <input
+              type="checkbox"
+              checked={c.enabled}
+              disabled={!!catBusy}
+              onChange={() => toggleCatalog(c)}
+            />
+            <div style={{ minWidth: 0 }}>
+              <div className="row__title">{c.name}</div>
+              <div className="row__meta">{c.description}</div>
+            </div>
+            <div className="spacer" />
+            <span className="preview-label">{c.service_count} services</span>
+          </label>
+        ))}
+      </div>
+
+      <div className="section-title">External sources</div>
       {sources.length > 0 && (
         <div className="row-list" style={{ marginBottom: "var(--sp-5)" }}>
           {sources.map((s) => (

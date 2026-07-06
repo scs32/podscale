@@ -118,6 +118,36 @@ code, data = post("/api/shares", {"do": "attach", "pod": "apitest", "share": "me
 check(code == 200 and data["ok"], "POST /api/shares attach")
 check(app.pod_config("apitest")["shares"] == ["media"], "share recorded on the pod")
 
+# --- built-in category catalogs: off by default, toggle merges entries ---
+code, data = get("/api/sources")
+check(code == 200 and any(c["key"] == "observability" for c in data["catalogs"]),
+      "sources: built-in catalogs listed")
+check(all(not c["enabled"] for c in data["catalogs"]),
+      "catalogs: all categories default off")
+code, data = get("/api/catalog")
+check(not any(c["name"] == "grafana" for c in data["catalog"]),
+      "catalog: category entries hidden until enabled")
+code, data = post("/api/catalogs", {"key": "observability", "enabled": True})
+check(code == 200 and data["ok"], "enable the observability catalog")
+code, data = get("/api/catalog")
+g = [c for c in data["catalog"] if c["name"] == "grafana"]
+check(bool(g) and g[0]["source"] == "Observability",
+      "grafana appears, tagged with its category")
+check(post("/api/catalogs", {"key": "bogus", "enabled": True})[0] == 400,
+      "unknown catalog key rejected")
+code, data = post("/api/catalogs", {"key": "observability", "enabled": False})
+check(code == 200 and not any(
+    c["name"] == "grafana"
+    for c in get("/api/catalog")[1]["catalog"]), "disable removes the entries")
+
+# --- /metrics: Prometheus exposition (no podman here -> flags only) ---
+with urllib.request.urlopen(BASE + "/metrics") as r:
+    text = r.read().decode()
+    check(r.status == 200 and 'tailarr_pod_up{pod="apitest"}' in text,
+          "/metrics exposes the pod up gauge")
+    check("tailarr_pod_public" in text and "tailarr_pod_update_available" in text,
+          "/metrics exposes funnel + update flags")
+
 # --- validation / error paths ---
 code, data = post("/api/install", {"service": "definitely-not-real"})
 check(code == 400 and data["ok"] is False and "Unknown service" in data["error"],

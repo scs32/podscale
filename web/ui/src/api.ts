@@ -4,6 +4,7 @@
 import type {
   ActionResult,
   BackupEntry,
+  BuiltinCatalog,
   CatalogItem,
   FleetAction,
   FleetResult,
@@ -141,7 +142,14 @@ export const api = {
   shareAttach: (pod: string, share: string) =>
     postJSON<ShareResult>("/api/shares", { do: "attach", pod, share }),
 
-  sources: () => getJSON<{ sources: Source[] }>("/api/sources").then((d) => d.sources),
+  sources: () =>
+    getJSON<{ sources: Source[]; catalogs: BuiltinCatalog[] }>("/api/sources"),
+
+  catalogSet: (key: string, enabled: boolean) =>
+    postJSON<{ ok: boolean; error: string | null }>("/api/catalogs", {
+      key,
+      enabled,
+    }),
 
   sourceAdd: (name: string, url: string) =>
     postJSON<ShareResult>("/api/sources", { do: "add", name, url }),

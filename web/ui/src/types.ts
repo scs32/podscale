@@ -124,6 +124,15 @@ export interface Source {
   error: string | null;
 }
 
+// Built-in category catalogs (opt-in beyond the default media catalog).
+export interface BuiltinCatalog {
+  key: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  service_count: number;
+}
+
 export interface Share {
   name: string;
   host_path: string;

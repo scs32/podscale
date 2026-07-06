@@ -105,9 +105,63 @@ NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 # =========================================================================
 # Data helpers (filesystem + podman + engine)
 # =========================================================================
+# Built-in category catalogs beyond the default media-empire homelab.js.
+# Each is a homelab.js-schema file baked into the image; users opt in per
+# category from the /sources panel. Enabled set persists like the other
+# registries. The default catalog is always on and wins name collisions.
+CATALOGS_DIR = os.path.join(APP_DIR, "catalogs")
+CATALOGS_FILE = os.path.join(PODS_DIR, ".catalogs.json")
+BUILTIN_CATALOGS = [
+    {"key": "observability", "name": "Observability",
+     "description": "Grafana + Prometheus — scrape the controller's /metrics"},
+    {"key": "home-network", "name": "Home & network",
+     "description": "Home Assistant, Pi-hole, UniFi, WireGuard, Portainer"},
+    {"key": "apps", "name": "Apps",
+     "description": "Nextcloud, Vaultwarden, BookStack, Gitea"},
+]
+
+
+def load_enabled_catalogs():
+    try:
+        with open(CATALOGS_FILE) as f:
+            data = json.load(f)
+        return set(data) if isinstance(data, list) else set()
+    except (OSError, ValueError):
+        return set()
+
+
+def save_enabled_catalogs(keys):
+    tmp = CATALOGS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(sorted(keys), f)
+    os.replace(tmp, CATALOGS_FILE)
+
+
+def _catalog_file_services(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
 def load_services():
+    services = {}
+    # enabled categories first — the default catalog wins name collisions
+    enabled = load_enabled_catalogs()
+    for cat in BUILTIN_CATALOGS:
+        if cat["key"] not in enabled:
+            continue
+        for s in _catalog_file_services(
+                os.path.join(CATALOGS_DIR, cat["key"] + ".js")):
+            s = dict(s)
+            s["_source"] = cat["name"]
+            services[s["name"]] = s
     with open(os.path.join(APP_DIR, "homelab.js")) as f:
-        return {s["name"]: s for s in json.load(f)}
+        for s in json.load(f):
+            services[s["name"]] = s
+    return services
 
 
 def load_sources():
@@ -166,7 +220,7 @@ def all_services():
     Built-in and earlier sources win on name collision. Each spec is tagged
     with `_source` ("built-in" or the source name). Returns (dict, errors).
     """
-    merged = {name: {**spec, "_source": "built-in"}
+    merged = {name: {**spec, "_source": spec.get("_source", "built-in")}
               for name, spec in load_services().items()}
     errors = {}
     for sname, s in sorted(load_sources().items()):
@@ -1066,6 +1120,108 @@ def status_sources():
     return out
 
 
+def status_catalogs():
+    """Built-in category catalogs with their enabled state + entry counts."""
+    enabled = load_enabled_catalogs()
+    out = []
+    for cat in BUILTIN_CATALOGS:
+        count = len(_catalog_file_services(
+            os.path.join(CATALOGS_DIR, cat["key"] + ".js")))
+        out.append({**cat, "enabled": cat["key"] in enabled,
+                    "service_count": count})
+    return out
+
+
+def op_catalog_set(key, enabled):
+    if key not in {c["key"] for c in BUILTIN_CATALOGS}:
+        return {"ok": False, "key": key, "error": "Unknown catalog."}
+    keys = load_enabled_catalogs()
+    if enabled:
+        keys.add(key)
+    else:
+        keys.discard(key)
+    save_enabled_catalogs(keys)
+    return {"ok": True, "key": key, "error": None}
+
+
+def render_metrics():
+    """Prometheus exposition for the fleet: state, flags, backups, and live
+    CPU/mem from one `podman stats` pass (app container + sidecar per pod).
+    Scraped by the observability catalog's Prometheus at /metrics."""
+    lines = [
+        "# HELP tailarr_pod_up 1 when the pod's main container is running.",
+        "# TYPE tailarr_pod_up gauge",
+        "# HELP tailarr_pod_update_available 1 when a newer image was seen.",
+        "# TYPE tailarr_pod_update_available gauge",
+        "# HELP tailarr_pod_public 1 when exposed via Tailscale Funnel.",
+        "# TYPE tailarr_pod_public gauge",
+        "# HELP tailarr_pod_backup_age_seconds seconds since newest snapshot.",
+        "# TYPE tailarr_pod_backup_age_seconds gauge",
+    ]
+    ps = ps_all()
+    updates = load_updates().get("images", {})
+    backups = load_backups()
+    now = time.time()
+    for name in deployed_services():
+        info = pod_config(name) or {}
+        up = 1 if pod_state(name, ps) == "running" else 0
+        lines.append(f'tailarr_pod_up{{pod="{name}"}} {up}')
+        upd = 1 if updates.get(info.get("image", ""), {}).get("update") else 0
+        lines.append(f'tailarr_pod_update_available{{pod="{name}"}} {upd}')
+        pub = 1 if info.get("funnel") == "yes" else 0
+        lines.append(f'tailarr_pod_public{{pod="{name}"}} {pub}')
+        snaps = backups.get(name, [])
+        if snaps:
+            newest = max(s["ts"] for s in snaps)
+            age = now - time.mktime(time.strptime(newest, "%Y%m%d-%H%M%S"))
+            lines.append(
+                f'tailarr_pod_backup_age_seconds{{pod="{name}"}} {int(age)}')
+    # live resources: one stats pass covers app containers and sidecars
+    r = podman("stats", "--no-stream", "--format", "json", timeout=30)
+    if r.returncode == 0:
+        try:
+            rows = json.loads(r.stdout or "[]")
+        except ValueError:
+            rows = []
+        if rows:
+            lines += [
+                "# HELP tailarr_container_cpu_percent live CPU percent.",
+                "# TYPE tailarr_container_cpu_percent gauge",
+                "# HELP tailarr_container_mem_bytes live memory usage.",
+                "# TYPE tailarr_container_mem_bytes gauge",
+            ]
+        for row in rows:
+            cname = row.get("name") or row.get("Name") or ""
+            if not cname:
+                continue
+            cpu = str(row.get("cpu_percent") or row.get("CPUPerc")
+                      or "0").rstrip("%") or "0"
+            mem = row.get("mem_usage") or row.get("MemUsage") or 0
+            if isinstance(mem, str):  # e.g. "123.4MB / 4GB"
+                mem = mem.split("/")[0].strip()
+                units = {"kB": 1e3, "KiB": 1024, "MB": 1e6, "MiB": 1 << 20,
+                         "GB": 1e9, "GiB": 1 << 30, "B": 1}
+                for u, mult in units.items():
+                    if mem.endswith(u):
+                        try:
+                            mem = float(mem[: -len(u)]) * mult
+                        except ValueError:
+                            mem = 0
+                        break
+                else:
+                    mem = 0
+            try:
+                lines.append(
+                    f'tailarr_container_cpu_percent{{container="{cname}"}} '
+                    f'{float(cpu)}')
+                lines.append(
+                    f'tailarr_container_mem_bytes{{container="{cname}"}} '
+                    f'{int(float(mem))}')
+            except (TypeError, ValueError):
+                continue
+    return "\n".join(lines) + "\n"
+
+
 def status_shares():
     """Defined shares, each with mode/visibility and the pods using it."""
     shares = load_shares()
@@ -1867,7 +2023,8 @@ def api_get(path):
     if path == "/api/shares":
         return 200, {"shares": status_shares()}
     if path == "/api/sources":
-        return 200, {"sources": status_sources()}
+        return 200, {"sources": status_sources(),
+                     "catalogs": status_catalogs()}
     m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/logs", path)
     if m:
         return 200, op_action(m.group(1), "logs")
@@ -2009,6 +2166,11 @@ def api_post(path, data):
             return 400, {"ok": False, "error": "Unknown action."}
         return (200 if result["ok"] else 400), result
 
+    if path == "/api/catalogs":
+        result = op_catalog_set((data.get("key") or "").strip(),
+                                bool(data.get("enabled")))
+        return (200 if result["ok"] else 400), result
+
     if path == "/api/sources":
         action = (data.get("do") or "").strip()
         if action == "add":
@@ -2061,6 +2223,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
+        if url.path == "/metrics":
+            return self._send(render_metrics().encode(), 200,
+                              "text/plain; version=0.0.4; charset=utf-8")
         if url.path.startswith("/api/"):
             code, obj = api_get(url.path)
             return self._send_json(obj, code)
