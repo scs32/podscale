@@ -21,7 +21,23 @@ export function Users() {
   const [status, setStatus] = useState<UsersStatus | null>(null);
   const [busyKey, setBusyKey] = useState(""); // "<id>:<svc>" or "<id>:nick"
   const [nickEdit, setNickEdit] = useState<{ id: string; value: string } | null>(null);
+  const [minting, setMinting] = useState(false);
+  const [mintedKey, setMintedKey] = useState("");
   const { flash, show, clear } = useFlash();
+
+  async function mintKey() {
+    setMinting(true);
+    setMintedKey("");
+    try {
+      const r = await api.userKey();
+      if (r.ok && r.key) setMintedKey(r.key);
+      else show({ kind: "err", text: r.error ?? "Couldn't mint a key." });
+    } catch (e) {
+      show({ kind: "err", text: String(e) });
+    } finally {
+      setMinting(false);
+    }
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -85,17 +101,59 @@ export function Users() {
         <div style={{ marginTop: "var(--sp-5)" }}>
           <Alert kind="err">{status.error}</Alert>
         </div>
-      ) : status.users.length === 0 ? (
-        <div className="empty" style={{ marginTop: "var(--sp-5)" }}>
-          <div className="empty__title">No user machines yet</div>
-          <p style={{ margin: 0 }}>
-            Hand out an auth key tagged <code>tag:podscale-user</code> — devices
-            that enroll with it appear here with zero access until you grant it.
-          </p>
-        </div>
       ) : (
         <>
-          <div className="section-title">Machines</div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "var(--sp-3)",
+            }}
+          >
+            <div className="section-title">Machines</div>
+            <button
+              className={"btn btn--primary btn--sm" + (minting ? " btn--loading" : "")}
+              disabled={minting}
+              title="Mint a single-use enrollment key for a new user machine"
+              onClick={mintKey}
+            >
+              + Add user
+            </button>
+          </div>
+
+          {mintedKey && (
+            <div className="card" style={{ padding: "var(--sp-4)", marginTop: "var(--sp-3)" }}>
+              <div className="row__title">Enrollment key (single-use, expires in 24h)</div>
+              <div
+                className="log__body"
+                style={{ margin: "var(--sp-2) 0", userSelect: "all", cursor: "copy" }}
+                title="Click, then copy"
+              >
+                {mintedKey}
+              </div>
+              <p className="field__hint" style={{ margin: 0 }}>
+                On the new machine: install Tailscale and log in with this auth
+                key (e.g. <code>tailscale up --auth-key=…</code>). It appears
+                here with zero access — grant services with the checkboxes.
+                This key is shown once; mint another if you lose it.
+              </p>
+              <div className="preview-row" style={{ marginTop: "var(--sp-3)" }}>
+                <button className="btn btn--ghost btn--sm" onClick={() => setMintedKey("")}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+          {status.users.length === 0 && (
+            <div className="empty" style={{ marginTop: "var(--sp-4)" }}>
+              <div className="empty__title">No user machines yet</div>
+              <p style={{ margin: 0 }}>
+                “+ Add user” mints an enrollment key. Devices that log in with
+                it appear here with zero access until you grant services.
+              </p>
+            </div>
+          )}
           <div className="row-list">
             {status.users.map((u) => (
               <div key={u.id} className="row card" style={{ flexWrap: "wrap" }}>

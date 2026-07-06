@@ -99,6 +99,12 @@ export const api = {
       nickname,
     }),
 
+  userKey: () =>
+    postJSON<{ ok: boolean; error: string | null; key: string }>(
+      "/api/users/keys",
+      {},
+    ),
+
   userAccess: (id: string, service: string, allow: boolean) =>
     postJSON<{ ok: boolean; error: string | null }>(
       `/api/users/${id}/access`,

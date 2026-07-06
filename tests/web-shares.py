@@ -309,6 +309,57 @@ check(app.op_user_access("nTESTNODE1", "nope", True)["error"] == "Unknown servic
 check("token" in app.op_user_access("nTESTNODE1", "testpod", True)["error"],
       "users: access toggle without token fails cleanly")
 
+# --- policy generator: pure-text fence splicing (offline) ---
+POLICY = """{
+    // human comment stays
+    "grants": [
+        {"src": ["tag:x"], "dst": ["*"], "ip": ["*"]},   // human grant
+        // >>> podscale-managed:grants
+        {"src": ["old"], "dst": ["old"], "ip": ["*"]},
+        // <<< podscale-managed:grants
+    ],
+    "tagOwners": {
+        "tag:x": ["autogroup:admin"],
+        // >>> podscale-managed:tagowners
+        // <<< podscale-managed:tagowners
+    },
+    "nodeAttrs": [
+        // >>> podscale-managed:nodeattrs
+        // <<< podscale-managed:nodeattrs
+    ],
+}
+"""
+secs = app._managed_sections()
+check(any("tag:podscale-can-testpod" in ln for ln in secs["grants"]),
+      "policy: managed grants include the installed service")
+check(any("tag:podscale-svc-testpod" in ln for ln in secs["tagowners"]),
+      "policy: managed tagOwners include the svc/can pair")
+check(app._sections_prefix_ok(secs), "policy: generated content passes prefix rule")
+check(not app._sections_prefix_ok({"g": ['"tag:evil"']}),
+      "policy: prefix rule rejects foreign tags")
+spliced = app._splice_fences(POLICY, secs)
+check("// human comment stays" in spliced and '"tag:x": ["autogroup:admin"]' in spliced,
+      "policy: human lines and comments survive splicing")
+check('{"src": ["old"]' not in spliced, "policy: old managed content replaced")
+check('"dst": ["tag:podscale-svc-testpod"], "ip": ["443"]' in spliced,
+      "policy: new grant line spliced in")
+check('{"target": ["tag:podscale-public"], "attr": ["funnel"]},' in spliced,
+      "policy: funnel nodeAttr in managed block")
+try:
+    app._splice_fences(POLICY.replace("// <<< podscale-managed:grants\n", ""), secs)
+    check(False, "policy: missing end marker fails closed")
+except ValueError:
+    check(True, "policy: missing end marker fails closed")
+try:
+    app._splice_fences("{}", secs)
+    check(False, "policy: absent fences fail closed")
+except ValueError:
+    check(True, "policy: absent fences fail closed")
+check(app.ts_policy_sync()["error"] == "acl GET: no API token configured",
+      "policy: sync without token fails cleanly")
+check("no API token" in app.op_user_key()["error"],
+      "users: key minting without token fails cleanly")
+
 # --- monitor (Kuma) endpoints degrade gracefully without the client lib
 # (CI has no uptime-kuma-api; a configured image reports available=True) ---
 mon = app.status_monitor()

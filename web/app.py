@@ -737,6 +737,226 @@ def op_user_access(node_id, service, allow):
 
 
 # =========================================================================
+# Tailnet policy sync — the fenced-grant generator (docs/acl-design.md §4)
+#
+# Podscale owns three labeled fenced regions of the tailnet policy file
+# (grants / tagOwners / nodeAttrs) and regenerates them from the deployed
+# service list on install/remove. Line-level splicing only: the human's
+# HuJSON outside the fences survives byte-for-byte. Fail closed on any
+# fence anomaly; nothing inside a fence may reference a name outside
+# tag:podscale* (the prefix invariant).
+# =========================================================================
+_policy_lock = threading.Lock()
+ACL_BACKUP_FILE = os.path.join(PODS_DIR, ".acl-last-good.hujson")
+FENCE_BEGIN = "// >>> podscale-managed:"
+FENCE_END = "// <<< podscale-managed:"
+
+
+def _managed_sections():
+    """Desired fence contents, derived from the deployed service list."""
+    svcs = _shareable_services()
+    grants = ['{"src": ["tag:podscale"], "dst": ["tag:podscale"], "ip": ["*"]},']
+    for s in svcs:
+        grants.append(f'{{"src": ["tag:podscale-can-{s}"], '
+                      f'"dst": ["tag:podscale-svc-{s}"], "ip": ["443"]}},')
+    owners = [f'"{t}": ["autogroup:admin"],'
+              for t in ("tag:podscale", "tag:podscale-ctrl",
+                        "tag:podscale-user", "tag:podscale-public")]
+    for s in svcs:
+        owners.append(f'"tag:podscale-svc-{s}": ["autogroup:admin"],')
+        owners.append(f'"tag:podscale-can-{s}": ["autogroup:admin"],')
+    attrs = ['{"target": ["tag:podscale-public"], "attr": ["funnel"]},']
+    return {"grants": grants, "tagowners": owners, "nodeattrs": attrs}
+
+
+def _sections_prefix_ok(sections):
+    """The safety invariant: fences may only reference tag:podscale* names."""
+    for lines in sections.values():
+        for ln in lines:
+            for t in re.findall(r'"(tag:[a-z0-9-]+)"', ln):
+                if not t.startswith("tag:podscale"):
+                    return False
+    return True
+
+
+def _splice_fences(text, sections):
+    """Replace each labeled fenced region's content; leave everything else
+    untouched. Raises ValueError (fail closed) on any marker anomaly."""
+    lines = text.splitlines()
+    out, seen, i, n = [], set(), 0, len(lines)
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith(FENCE_END):
+            raise ValueError(f"stray end marker at line {i + 1}")
+        if not stripped.startswith(FENCE_BEGIN):
+            out.append(line)
+            i += 1
+            continue
+        sec = stripped[len(FENCE_BEGIN):].strip()
+        if sec not in sections:
+            raise ValueError(f"unknown managed section '{sec}'")
+        if sec in seen:
+            raise ValueError(f"duplicate managed section '{sec}'")
+        seen.add(sec)
+        indent = line[:len(line) - len(line.lstrip())]
+        out.append(line)
+        j = i + 1
+        while j < n and not lines[j].strip().startswith(FENCE_END):
+            if lines[j].strip().startswith(FENCE_BEGIN):
+                raise ValueError(f"nested managed markers in '{sec}'")
+            j += 1
+        if j >= n:
+            raise ValueError(f"missing end marker for '{sec}'")
+        end_sec = lines[j].strip()[len(FENCE_END):].strip()
+        if end_sec != sec:
+            raise ValueError(f"mismatched fence labels: '{sec}' vs '{end_sec}'")
+        out.extend(indent + c for c in sections[sec])
+        out.append(lines[j])
+        i = j + 1
+    missing = sorted(set(sections) - seen)
+    if missing:
+        raise ValueError(f"managed sections missing from policy: {missing} "
+                         "(re-run adopt: add the fenced markers)")
+    return "\n".join(out) + "\n"
+
+
+def _ts_acl(method, path_suffix="", body_text=None, etag=None):
+    """Raw-HuJSON ACL endpoint client. Returns (status, text, etag)."""
+    token = _ts_token()
+    if not token:
+        return 0, "no API token configured", ""
+    headers = {"Authorization": f"Bearer {token}",
+               "Accept": "application/hujson"}
+    if body_text is not None:
+        headers["Content-Type"] = "application/hujson"
+    if etag:
+        headers["If-Match"] = f'"{etag}"'
+    req = urllib.request.Request(
+        "https://api.tailscale.com/api/v2/tailnet/-/acl" + path_suffix,
+        data=body_text.encode() if body_text is not None else None,
+        headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, r.read().decode(), \
+                (r.headers.get("ETag") or "").strip('"')
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()[:500], ""
+    except (urllib.error.URLError, TimeoutError) as e:
+        return 0, f"tailscale API unreachable: {e}", ""
+
+
+def ts_policy_sync():
+    """Regenerate the podscale-managed regions of the tailnet policy.
+    Returns {ok, changed, error}."""
+    sections = _managed_sections()
+    if not _sections_prefix_ok(sections):
+        return {"ok": False, "changed": False,
+                "error": "generated content violates the tag prefix rule"}
+    with _policy_lock:
+        for _attempt in range(2):
+            code, raw, etag = _ts_acl("GET")
+            if code != 200:
+                return {"ok": False, "changed": False, "error": f"acl GET: {raw}"}
+            try:
+                new_text = _splice_fences(raw, sections)
+            except ValueError as e:
+                return {"ok": False, "changed": False, "error": f"policy fences: {e}"}
+            if new_text == raw:
+                return {"ok": True, "changed": False, "error": None}
+            code, resp, _ = _ts_acl("POST", "/validate", new_text)
+            if code != 200 or '"message"' in resp:
+                return {"ok": False, "changed": False, "error": f"acl validate: {resp[:300]}"}
+            # keep the last-known-good policy for one-call rollback
+            try:
+                with open(ACL_BACKUP_FILE + ".tmp", "w") as f:
+                    f.write(raw)
+                os.replace(ACL_BACKUP_FILE + ".tmp", ACL_BACKUP_FILE)
+            except OSError:
+                pass
+            code, resp, _ = _ts_acl("POST", "", new_text, etag=etag)
+            if code == 200:
+                return {"ok": True, "changed": True, "error": None}
+            if code != 412:
+                return {"ok": False, "changed": False, "error": f"acl POST: {resp[:300]}"}
+            # 412: someone else edited the policy — refetch and retry once
+        return {"ok": False, "changed": False,
+                "error": "acl POST: concurrent edits kept winning (412)"}
+
+
+def _ts_find_device(hostname):
+    code, data = ts_api("GET", "/tailnet/-/devices")
+    if code != 200:
+        return None
+    matches = [d for d in data.get("devices", [])
+               if d.get("hostname") == hostname]
+    matches.sort(key=lambda d: d.get("lastSeen", ""), reverse=True)
+    return matches[0] if matches else None
+
+
+def ts_tag_sidecar(name):
+    """Best-effort: ensure a pod's sidecar wears its identity tags. Runs in
+    the background after a successful start (the sidecar enrolls then).
+    Idempotent; preserves tag:podscale-public; silent on failure — the next
+    start retries."""
+    if not _ts_token():
+        return
+    want = {"tag:podscale",
+            "tag:podscale-ctrl" if name in CONTROLLER_PODS
+            else f"tag:podscale-svc-{name}"}
+    for _ in range(5):
+        d = _ts_find_device(name)
+        if d:
+            tags = set(d.get("tags") or [])
+            if want <= tags:
+                return
+            keep = {t for t in tags if t == "tag:podscale-public"}
+            ts_api("POST", f"/device/{d['nodeId']}/tags",
+                   {"tags": sorted(want | keep)})
+            return
+        time.sleep(3)  # enrollment may lag the container start by seconds
+
+
+def ts_set_public(name, public):
+    """Add/remove tag:podscale-public on a pod's sidecar so the funnel
+    nodeAttr applies. Returns an error string or None."""
+    if not _ts_token():
+        return ("no Tailscale API token on the controller — the funnel "
+                "nodeAttr was not updated; public exposure will be refused "
+                "by tailscaled")
+    d = _ts_find_device(name)
+    if not d:
+        return f"sidecar '{name}' not found in the tailnet"
+    tags = set(d.get("tags") or [])
+    new = (tags | {"tag:podscale-public"}) if public \
+        else (tags - {"tag:podscale-public"})
+    if new == tags:
+        return None
+    code, resp = ts_api("POST", f"/device/{d['nodeId']}/tags",
+                        {"tags": sorted(new)})
+    if code != 200:
+        return f"tags API: {resp}"
+    return None
+
+
+def op_user_key():
+    """Mint a single-use, preauthorized tag:podscale-user auth key (24h TTL).
+    Devices enrolling with it appear on the Users page with zero access."""
+    if not _ts_token():
+        return {"ok": False, "error": "no API token configured", "key": ""}
+    code, resp = ts_api("POST", "/tailnet/-/keys", {
+        "capabilities": {"devices": {"create": {
+            "reusable": False, "ephemeral": False, "preauthorized": True,
+            "tags": [TS_USER_TAG]}}},
+        "expirySeconds": 86400,
+        "description": "podscale user enrollment",
+    })
+    if code != 200:
+        return {"ok": False, "error": f"keys API: {resp}", "key": ""}
+    return {"ok": True, "error": None, "key": resp.get("key", "")}
+
+
+# =========================================================================
 # Core operations -- pure logic returning result dicts (no HTML)
 # =========================================================================
 def status_pods():
@@ -884,6 +1104,13 @@ def op_install(req):
     output = result.stdout + result.stderr
     if result.returncode != 0:
         return {"ok": False, "name": name, "error": None, "output": output}
+    # New service => its svc-/can- tags and grant line enter the policy's
+    # managed regions (no-op without an API token; the install still works,
+    # the pod just isn't shareable/taggable until the policy catches up).
+    if _ts_token():
+        sync = ts_policy_sync()
+        if not sync["ok"]:
+            output += f"\n[policy] {sync['error']}"
     return {"ok": True, "name": name, "error": None, "output": output}
 
 
@@ -956,6 +1183,16 @@ def _run_action(name, action):
 
     output = r.stdout + r.stderr
     ok = r.returncode == 0
+    if ok and action == "start":
+        # Sidecar just (re)enrolled — make sure it wears its identity tags.
+        threading.Thread(target=ts_tag_sidecar, args=(name,), daemon=True).start()
+    if ok and action == "remove" and _ts_token():
+        # Drop the service's grant line + tagOwners from the managed regions.
+        # The tailnet NODE is deliberately not deleted: backups carry its
+        # identity, and a reinstall under the same name reuses it.
+        sync = ts_policy_sync()
+        if not sync["ok"]:
+            output += f"\n[policy] {sync['error']}"
     return {"ok": ok, "name": name, "action": action,
             "status": "ok" if ok else f"exit {r.returncode}",
             "error": None, "output": output}
@@ -1296,7 +1533,13 @@ def op_network_set(name, data):
         with open(serve_path, "w") as f:
             json.dump(_serve_config(info["primary_port"], funnel), f, indent=2)
 
-        # 3. Best-effort readback so ACL refusals are visible: give the
+        # 3. Funnel needs the `funnel` nodeAttr, which the managed policy
+        #    grants via tag:podscale-public — flip that tag on the sidecar.
+        attr_err = ts_set_public(name, funnel)
+        if attr_err:
+            output += f"\n[funnel nodeAttr] {attr_err}"
+
+        # 4. Best-effort readback so ACL refusals are visible: give the
         #    watcher a moment, then show the sidecar's own view of serve.
         if ps_all().get(f"tailscale-{name}", ("", 0))[0] == "running":
             time.sleep(2)
@@ -1657,6 +1900,10 @@ def api_post(path, data):
         result = op_network_set(m.group(1), data)
         code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
         return code, result
+
+    if path == "/api/users/keys":
+        result = op_user_key()
+        return (200 if result["ok"] else 400), result
 
     m = re.fullmatch(r"/api/users/([A-Za-z0-9]+)/access", path)
     if m:
