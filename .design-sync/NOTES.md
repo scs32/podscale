@@ -1,7 +1,7 @@
 # design-sync notes
 
 **Target project:** "Tailarr" on claude.ai/design — projectId
-`85ffe601-9aa7-4f9f-a149-90bf82992179` (pinned in `config.json`).
+`a5989aac-f7a7-4e2d-b1a6-33d0d99d3d7e` (pinned in `config.json`).
 
 **This design system does NOT use the converter.** It is intentionally a set
 of hand-authored HTML `@dsCard` preview cards, not a compiled component
