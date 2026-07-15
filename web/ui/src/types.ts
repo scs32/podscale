@@ -190,9 +190,41 @@ export interface FleetResult {
   skipped: { name: string; busy: string }[];
 }
 
+// GET /api/tsapi — the controller's Tailscale API credential state.
+export interface TsApiStatus {
+  configured: boolean;
+  mode: "oauth" | "token" | null;
+  error: string | null;
+}
+
+export interface TsApiCheck {
+  ok: boolean;
+  detail: string | null; // set on failure
+}
+
+// POST /api/tsapi/validate and POST /api/tsapi (save) — live credential
+// probe, one read-only check per capability the controller needs.
+export interface TsApiProbe {
+  ok: boolean;
+  saved?: boolean; // only on the save endpoint
+  mode: "oauth" | "token" | null;
+  checks: Partial<Record<"devices" | "auth_keys" | "policy_file", TsApiCheck>>;
+  fences: { present: string[]; missing: string[] } | null;
+  error: string | null;
+}
+
+// Credential shapes accepted by the wizard endpoints (mirrors .tsapi.json).
+export interface TsApiCredential {
+  token?: string;
+  oauth_client_id?: string;
+  oauth_client_secret?: string;
+}
+
 export interface Info {
   pods_dir: string;
   controller_pods: string[];
+  version: string;
+  tsapi: TsApiStatus;
 }
 
 export interface InstallResult {

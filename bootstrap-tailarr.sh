@@ -57,8 +57,22 @@ fi
 cat > /root/start-pods.sh << 'STARTEOF'
 #!/bin/sh
 # Bring up the pod fleet after guest boot (see bootstrap-tailarr.sh).
+#
+# HAZARD: wiping podman's runroot on a LIVE stack destroys the running
+# containers (they drop to Created and need a full re-bootstrap). The wipe
+# is only correct after a real reboot, when /run holds stale pre-reboot
+# state. The tmpfs sentinel normally gates it, but if this script is run
+# by hand on a healthy stack (or the sentinel was cleared), double-check:
+# only wipe when podman genuinely can't reach its state AND nothing is Up.
 if [ ! -f /dev/shm/pods-booted ]; then
-  rm -rf /run/containers /run/user/0/netns /run/libpod 2>/dev/null || true
+  if podman --url unix:///run/podman/podman.sock info >/dev/null 2>&1 \
+     || [ -n "$(podman ps --format '{{.Names}}' 2>/dev/null)" ]; then
+    : # API socket answers or containers are Up -> healthy stack, a manual
+      # run must NOT wipe; just (re)start anything stopped below.
+  else
+    # Socket dead AND nothing running: genuine post-reboot stale state.
+    rm -rf /run/containers /run/user/0/netns /run/libpod 2>/dev/null || true
+  fi
   touch /dev/shm/pods-booted
 fi
 

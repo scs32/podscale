@@ -12,6 +12,7 @@
 # Pass 2: :ro volume handling
 # Pass 3: funnel render (AllowFunnel opt-in)
 # Pass 4: spent/deleted key tolerated when Tailscale state exists
+# Pass 5: log init never kills a deploy (invalid / read-only CWD regression)
 set -eu
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -204,6 +205,68 @@ mkdir -p "$SVC_DIR/tailscale" && touch "$SVC_DIR/tailscale/tailscaled.state"
 rm -f "$HOME/Pods/.tailscale_authkey"
 run_generated "$SVC_DIR"
 pass "run.sh still works after the single-use key file is deleted (state present)"
+
+# =========================================================================
+echo "=== Pass 5: log init never kills a deploy (bad-CWD regression) ==="
+# Regression for the v0.5.x production failure: LOG_FILE defaulted to the
+# relative ./.deployment.log and was touched at source time, so create.sh
+# died with "touch: ./.deployment.log: No such file or directory" before
+# any other output whenever the caller's CWD was invalid. A deploy must
+# now survive any CWD, and the log must land in the service dir.
+printf '%s\n' "$TEST_KEY" > "$HOME/Pods/.tailscale_authkey"
+LOGCFG() {
+    printf '{"container": "%s", "image": "docker.io/nginx:latest",
+      "network_mode": "bridge", "ports": {"80": "80"},
+      "restart_policy": "unless-stopped",
+      "auth_key_file": "%s/Pods/.tailscale_authkey",
+      "base_path": "%s/Pods", "environment": {}, "volumes": {},
+      "command": ""}' "$1" "$HOME" "$HOME"
+}
+
+# 5a: read-only CWD (a /tmp surrogate the deploy may not write into)
+RO_DIR="$WORK/read-only-cwd"
+mkdir -p "$RO_DIR"
+chmod 555 "$RO_DIR"
+if ! (cd "$RO_DIR" && LOGCFG logtest-ro | "$BASH_BIN" "$REPO_DIR/create.sh" \
+        > "$WORK/create-ro.log" 2>&1); then
+    cat "$WORK/create-ro.log" >&2
+    chmod 755 "$RO_DIR"
+    fail "create.sh died with a read-only CWD (log-init regression)"
+fi
+chmod 755 "$RO_DIR"
+[ -f "$HOME/Pods/logtest-ro/run.sh" ] || fail "read-only-CWD render produced no run.sh"
+[ -f "$HOME/Pods/logtest-ro/.deployment.log" ] \
+    || fail "deployment log did not land in the service dir"
+pass "create.sh survives a read-only CWD; log lands in the service dir"
+
+# 5b: deleted CWD (not every OS allows removing the CWD; skip if this one
+# refuses — 5a already exercises the unwritable-CWD path)
+GONE_DIR="$WORK/gone-cwd"
+mkdir -p "$GONE_DIR"
+if (cd "$GONE_DIR" && rmdir "$GONE_DIR" 2>/dev/null); then
+    mkdir -p "$GONE_DIR"
+    if ! (cd "$GONE_DIR" && rmdir "$GONE_DIR" \
+            && LOGCFG logtest-gone | "$BASH_BIN" "$REPO_DIR/create.sh" \
+            > "$WORK/create-gone.log" 2>&1); then
+        cat "$WORK/create-gone.log" >&2
+        fail "create.sh died with a deleted CWD (log-init regression)"
+    fi
+    [ -f "$HOME/Pods/logtest-gone/run.sh" ] || fail "deleted-CWD render produced no run.sh"
+    pass "create.sh survives a deleted CWD"
+else
+    pass "deleted-CWD sub-test skipped (this OS refuses to rmdir the CWD)"
+fi
+
+# 5c: an absolute LOG_FILE from the environment wins (how the controller calls it)
+PINNED="$WORK/pinned.log"
+LOGCFG logtest-env | LOG_FILE="$PINNED" "$BASH_BIN" "$REPO_DIR/create.sh" \
+    > "$WORK/create-env.log" 2>&1 || {
+    cat "$WORK/create-env.log" >&2
+    fail "create.sh failed with LOG_FILE pinned via env"
+}
+[ -f "$PINNED" ] || fail "env-pinned LOG_FILE was not written"
+grep -q "Tailarr Deployment Log" "$PINNED" || fail "env-pinned log has no header"
+pass "absolute LOG_FILE from the environment is honored"
 
 echo ""
 echo "SMOKE TEST PASSED"

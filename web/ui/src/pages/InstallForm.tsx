@@ -6,6 +6,7 @@ import { Field, FormSection } from "../components/Form";
 import { Alert } from "../components/Alert";
 import { SharePicker } from "../components/SharePicker";
 import { InstallResultView } from "../components/InstallResultView";
+import { AuthKeyField } from "../components/AuthKeyField";
 
 export function InstallForm() {
   const { name = "" } = useParams();
@@ -17,6 +18,7 @@ export function InstallForm() {
   const [vols, setVols] = useState<Record<string, string>>({});
   const [picked, setPicked] = useState<string[]>([]);
   const [authkey, setAuthkey] = useState("");
+  const [tsapiOk, setTsapiOk] = useState<boolean | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<InstallResult | null>(null);
@@ -27,6 +29,7 @@ export function InstallForm() {
         const found = catalog.find((c) => c.name === name) ?? null;
         setItem(found);
         setShares(sh);
+        setTsapiOk(info.tsapi.configured);
         if (found) {
           setEnv({ ...found.environment });
           const v: Record<string, string> = {};
@@ -90,17 +93,12 @@ export function InstallForm() {
             Every pod gets its own tailnet identity with HTTPS via{" "}
             <code>tailscale serve</code> — https://{item.name}.&lt;tailnet&gt;.ts.net.
           </p>
-          <Field
-            label="Tailscale auth key"
-            hint="Fresh single-use, non-ephemeral key. Leave blank only if this pod already has enrolled Tailscale state."
-          >
-            <input
-              className="input"
-              autoComplete="off"
-              value={authkey}
-              onChange={(e) => setAuthkey(e.target.value)}
-            />
-          </Field>
+          <AuthKeyField
+            configured={tsapiOk}
+            value={authkey}
+            onChange={setAuthkey}
+            onConfigured={() => setTsapiOk(true)}
+          />
         </FormSection>
 
         {Object.keys(env).length > 0 && (

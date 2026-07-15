@@ -36,6 +36,8 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+VERSION = "0.6.0"
+
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
 STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(APP_DIR, "static"))
@@ -343,12 +345,29 @@ def config_from_info(info):
 
 
 def run_create(config):
+    """Render a pod through create.sh.
+
+    The engine must never depend on an ambient CWD or a relative log path:
+    a momentarily-invalid /tmp once killed deploys at the very first log
+    `touch`. Run it from the pod's own directory (created here, and
+    guaranteed to exist for the engine anyway) and pin absolute log paths
+    via the environment."""
+    svc_dir = os.path.join(config.get("base_path") or PODS_DIR,
+                           config.get("container") or "")
+    try:
+        os.makedirs(svc_dir, exist_ok=True)
+    except OSError:
+        svc_dir = PODS_DIR  # always exists (host mount)
+    env = {**os.environ,
+           "LOG_FILE": os.path.join(svc_dir, ".deployment.log"),
+           "ERROR_LOG_FILE": os.path.join(svc_dir, ".error.log")}
     return subprocess.run(
         ["bash", os.path.join(APP_DIR, "create.sh")],
         input=json.dumps(config),
         capture_output=True,
         text=True,
-        cwd="/tmp",
+        cwd=svc_dir,
+        env=env,
         timeout=300,
     )
 
@@ -668,6 +687,43 @@ _oauth_lock = threading.Lock()
 _oauth_cache = {"token": "", "exp": 0.0}
 
 
+def _oauth_exchange(cid, secret):
+    """Exchange an OAuth client for a short-lived access token.
+    Returns (token, error) — the error string carries no secrets."""
+    req = urllib.request.Request(
+        "https://api.tailscale.com/api/v2/oauth/token",
+        data=urllib.parse.urlencode(
+            {"client_id": cid, "client_secret": secret}).encode(),
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return "", (f"OAuth token exchange rejected (HTTP {e.code}) — "
+                    "check the client id and secret")
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        return "", f"OAuth token exchange failed: {e}"
+    token = data.get("access_token", "")
+    if not token:
+        return "", "OAuth token exchange returned no access token"
+    return token, None
+
+
+def _cred_token(cfg):
+    """Resolve a credential dict to a bearer token, uncached.
+    Returns (token, mode, error); mode is 'token' | 'oauth' | None."""
+    static = (cfg.get("token") or "").strip()
+    if static:
+        return static, "token", None
+    cid = (cfg.get("oauth_client_id") or "").strip()
+    secret = (cfg.get("oauth_client_secret") or "").strip()
+    if cid and secret:
+        token, err = _oauth_exchange(cid, secret)
+        return token, "oauth", err
+    return "", None, ("no credential: provide an OAuth client id+secret "
+                      "or an API access token")
+
+
 def _ts_token():
     """The Tailscale API credential.
 
@@ -687,34 +743,24 @@ def _ts_token():
     static = (cfg.get("token") or "").strip()
     if static:
         return static
-    cid = (cfg.get("oauth_client_id") or "").strip()
-    secret = (cfg.get("oauth_client_secret") or "").strip()
-    if not (cid and secret):
+    if not ((cfg.get("oauth_client_id") or "").strip()
+            and (cfg.get("oauth_client_secret") or "").strip()):
         return ""
     now = time.time()
     with _oauth_lock:
         if _oauth_cache["exp"] - 60 > now:
             return _oauth_cache["token"]
-        req = urllib.request.Request(
-            "https://api.tailscale.com/api/v2/oauth/token",
-            data=urllib.parse.urlencode(
-                {"client_id": cid, "client_secret": secret}).encode(),
-            method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                data = json.loads(r.read().decode())
-        except (urllib.error.URLError, TimeoutError, ValueError):
+        token, _mode, err = _cred_token(cfg)
+        if err:
             return ""
-        _oauth_cache["token"] = data.get("access_token", "")
-        _oauth_cache["exp"] = now + float(data.get("expires_in", 3600))
-        return _oauth_cache["token"]
+        _oauth_cache["token"] = token
+        _oauth_cache["exp"] = now + 3600  # Tailscale access tokens live 1h
+        return token
 
 
-def ts_api(method, path, body=None):
-    """Minimal Tailscale API client. Returns (status_code, parsed_or_text)."""
-    token = _ts_token()
-    if not token:
-        return 0, "no API token configured"
+def _ts_api_with(token, method, path, body=None):
+    """Tailscale API call with an explicit bearer token.
+    Returns (status_code, parsed_or_text)."""
     req = urllib.request.Request(
         "https://api.tailscale.com/api/v2" + path,
         data=json.dumps(body).encode() if body is not None else None,
@@ -733,6 +779,14 @@ def ts_api(method, path, body=None):
         return e.code, e.read().decode()[:500]
     except (urllib.error.URLError, TimeoutError) as e:
         return 0, f"tailscale API unreachable: {e}"
+
+
+def ts_api(method, path, body=None):
+    """Minimal Tailscale API client. Returns (status_code, parsed_or_text)."""
+    token = _ts_token()
+    if not token:
+        return 0, "no API token configured"
+    return _ts_api_with(token, method, path, body)
 
 
 def load_user_nicks():
@@ -1094,6 +1148,254 @@ def op_user_key():
     return {"ok": True, "error": None, "key": resp.get("key", "")}
 
 
+def ts_mint_pod_key(name):
+    """Mint a preauthorized, single-use auth key for a pod's sidecar.
+
+    Tagged tag:tailarr only: the base tag is in the policy's tagOwners from
+    day one, while tag:tailarr-svc-<name> enters tagOwners only during the
+    post-install policy sync — minting with the svc tag would be a
+    chicken-and-egg failure on first deploy. The sidecar gains its svc tag
+    right after start via ts_tag_sidecar() (devices API). Non-ephemeral so
+    the node survives restarts; 7-day TTL covers installs that aren't
+    started immediately (once enrolled, ./tailscale/ state replaces it)."""
+    if not _ts_token():
+        return {"ok": False, "error": "no API token configured", "key": ""}
+    code, resp = ts_api("POST", "/tailnet/-/keys", {
+        "capabilities": {"devices": {"create": {
+            "reusable": False, "ephemeral": False, "preauthorized": True,
+            "tags": ["tag:tailarr"]}}},
+        "expirySeconds": 7 * 86400,
+        "description": f"tailarr pod {name}",
+    })
+    if code != 200:
+        return {"ok": False, "error": f"keys API: {resp}", "key": ""}
+    return {"ok": True, "error": None, "key": resp.get("key", "")}
+
+
+def _write_secret(path, content):
+    """Write a secret file created private (0600) from the first byte."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
+    os.chmod(path, 0o600)  # a pre-existing file keeps 0600 too
+
+
+# =========================================================================
+# API-credential wizard (Settings) — validate, save, and adopt the policy.
+#
+# The first API-requiring action (user adoption, key minting, service
+# deploy without a pasted key) on a fresh install has nowhere to get its
+# credential from; these ops back the guided in-UI wizard that creates it.
+# Secrets are validated live (read-only calls), written 0600, and never
+# logged or echoed back.
+# =========================================================================
+FENCE_SECTIONS = ("grants", "tagowners", "nodeattrs")
+
+
+def _tsapi_cfg_from(data):
+    """Whitelist a credential dict from a request body (nothing else is
+    ever persisted). Returns {} when no usable credential is present."""
+    token = (data.get("token") or "").strip()
+    if token:
+        return {"token": token}
+    cid = (data.get("oauth_client_id") or "").strip()
+    secret = (data.get("oauth_client_secret") or "").strip()
+    if cid and secret:
+        return {"oauth_client_id": cid, "oauth_client_secret": secret}
+    return {}
+
+
+def status_tsapi():
+    """Credential presence/shape only — no network calls (cheap to poll)."""
+    try:
+        with open(TSAPI_FILE) as f:
+            cfg = json.load(f)
+    except OSError:
+        return {"configured": False, "mode": None, "error": None}
+    except ValueError:
+        return {"configured": False, "mode": None,
+                "error": ".tsapi.json exists but is not valid JSON"}
+    if (cfg.get("token") or "").strip():
+        return {"configured": True, "mode": "token", "error": None}
+    if ((cfg.get("oauth_client_id") or "").strip()
+            and (cfg.get("oauth_client_secret") or "").strip()):
+        return {"configured": True, "mode": "oauth", "error": None}
+    return {"configured": False, "mode": None,
+            "error": ".tsapi.json exists but holds neither a token nor an "
+                     "OAuth client"}
+
+
+def _fence_sections_present(text):
+    """The managed sections whose begin marker appears in a policy text."""
+    found = set()
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith(FENCE_BEGIN):
+            found.add(s[len(FENCE_BEGIN):].strip())
+    return found & set(FENCE_SECTIONS)
+
+
+def _snip(data):
+    return str(data)[:200]
+
+
+def op_tsapi_validate(data):
+    """Live-validate a credential (from the request, or the saved one when
+    the request carries none) with READ-ONLY calls, reporting pass/fail per
+    capability the controller needs — devices, auth_keys, policy_file —
+    plus whether the policy already has the tailarr-managed fence markers.
+    """
+    cfg = _tsapi_cfg_from(data)
+    if not cfg:
+        try:
+            with open(TSAPI_FILE) as f:
+                cfg = _tsapi_cfg_from(json.load(f))
+        except (OSError, ValueError):
+            cfg = {}
+    if not cfg:
+        return {"ok": False, "mode": None, "checks": {}, "fences": None,
+                "error": "No credential: provide an OAuth client id+secret "
+                         "or an API access token."}
+    token, mode, err = _cred_token(cfg)
+    if err:
+        return {"ok": False, "mode": mode, "checks": {}, "fences": None,
+                "error": err}
+
+    checks = {}
+    code, resp = _ts_api_with(token, "GET", "/tailnet/-/devices")
+    checks["devices"] = {
+        "ok": code == 200,
+        "detail": None if code == 200 else f"GET /devices -> {code}: "
+        + _snip(resp)}
+    code, resp = _ts_api_with(token, "GET", "/tailnet/-/keys")
+    checks["auth_keys"] = {
+        "ok": code == 200,
+        "detail": None if code == 200 else f"GET /keys -> {code}: "
+        + _snip(resp)}
+    code, resp = _ts_api_with(token, "GET", "/tailnet/-/acl")
+    checks["policy_file"] = {
+        "ok": code == 200,
+        "detail": None if code == 200 else f"GET /acl -> {code}: "
+        + _snip(resp)}
+    fences = None
+    if checks["policy_file"]["ok"]:
+        text = resp if isinstance(resp, str) else json.dumps(resp)
+        found = _fence_sections_present(text)
+        fences = {"present": sorted(found),
+                  "missing": sorted(set(FENCE_SECTIONS) - found)}
+    failed = sorted(k for k, c in checks.items() if not c["ok"])
+    return {"ok": not failed, "mode": mode, "checks": checks,
+            "fences": fences,
+            "error": None if not failed else
+            "The credential is missing write scope(s) or was rejected for: "
+            + ", ".join(failed) + ". Recreate the OAuth client with "
+            "Devices/Core, Auth Keys and Policy File write scopes."}
+
+
+def op_tsapi_save(data):
+    """Validate, then persist the credential to .tsapi.json (0600).
+    Rejects credentials that fail any capability check."""
+    cfg = _tsapi_cfg_from(data)
+    if not cfg:
+        return {"ok": False, "saved": False, "mode": None, "checks": {},
+                "fences": None,
+                "error": "Provide an OAuth client id+secret or an API "
+                         "access token."}
+    probe = op_tsapi_validate(cfg)
+    if not probe["ok"]:
+        probe["saved"] = False
+        return probe
+    _write_secret(TSAPI_FILE, json.dumps(cfg, indent=2) + "\n")
+    with _oauth_lock:  # a fresh credential invalidates any cached token
+        _oauth_cache["token"], _oauth_cache["exp"] = "", 0.0
+    probe["saved"] = True
+    return probe
+
+
+def _insert_fence_markers(text, missing):
+    """Insert empty marker pairs for missing managed sections into a policy.
+
+    Same line-splicing spirit as _splice_fences: the marker pair lands just
+    inside the section's container ('"grants": [' / '"tagOwners": {' /
+    '"nodeAttrs": ['); an absent container is created before the policy's
+    final closing brace (trailing commas are legal HuJSON). Everything the
+    human wrote survives byte-for-byte. Raises ValueError (fail closed) on
+    any layout this cannot handle safely."""
+    keymap = {"grants": ("grants", "[", "],"),
+              "tagowners": ("tagOwners", "{", "},"),
+              "nodeattrs": ("nodeAttrs", "[", "],")}
+    lines = text.splitlines()
+    for sec in missing:
+        key, opener, closer = keymap[sec]
+        pat = re.compile(r'^\s*"' + key + r'"\s*:\s*' + re.escape(opener))
+        idx = next((i for i, ln in enumerate(lines) if pat.match(ln)), None)
+        if idx is not None:
+            indent = lines[idx][:len(lines[idx]) - len(lines[idx].lstrip())]
+            lines[idx + 1:idx + 1] = [indent + "\t" + FENCE_BEGIN + sec,
+                                      indent + "\t" + FENCE_END + sec]
+            continue
+        if any(re.search(r'"' + key + r'"\s*:', ln) for ln in lines):
+            raise ValueError(
+                f'"{key}" exists but not as \'"{key}": {opener}\' on one '
+                "line — add the fence markers to it by hand")
+        close = max((i for i, ln in enumerate(lines) if ln.strip() == "}"),
+                    default=None)
+        if close is None:
+            raise ValueError("could not find the policy's closing brace")
+        lines[close:close] = [f'\t"{key}": {opener}',
+                              "\t\t" + FENCE_BEGIN + sec,
+                              "\t\t" + FENCE_END + sec,
+                              "\t" + closer]
+    return "\n".join(lines) + "\n"
+
+
+def op_policy_init_fences():
+    """The adopt path: ensure the tailnet policy carries all three
+    tailarr-managed fenced regions, then sync their contents. Without this,
+    _splice_fences fails closed ('managed sections missing') on tailnets
+    that never ran the manual adopt. Returns {ok, added, error}."""
+    added = []
+    with _policy_lock:
+        for _attempt in range(2):
+            code, raw, etag = _ts_acl("GET")
+            if code != 200:
+                return {"ok": False, "added": [], "error": f"acl GET: {raw}"}
+            missing = sorted(set(FENCE_SECTIONS)
+                             - _fence_sections_present(raw))
+            if not missing:
+                break
+            try:
+                new_text = _insert_fence_markers(raw, missing)
+            except ValueError as e:
+                return {"ok": False, "added": [],
+                        "error": f"policy fences: {e}"}
+            code, resp, _ = _ts_acl("POST", "/validate", new_text)
+            if code != 200 or '"message"' in resp:
+                return {"ok": False, "added": [],
+                        "error": f"acl validate: {resp[:300]}"}
+            try:  # keep the pre-adopt policy for one-call rollback
+                with open(ACL_BACKUP_FILE + ".tmp", "w") as f:
+                    f.write(raw)
+                os.replace(ACL_BACKUP_FILE + ".tmp", ACL_BACKUP_FILE)
+            except OSError:
+                pass
+            code, resp, _ = _ts_acl("POST", "", new_text, etag=etag)
+            if code == 200:
+                added = missing
+                break
+            if code != 412:
+                return {"ok": False, "added": [],
+                        "error": f"acl POST: {resp[:300]}"}
+            # 412: someone else edited the policy — refetch and retry once
+        else:
+            return {"ok": False, "added": [],
+                    "error": "acl POST: concurrent edits kept winning (412)"}
+    # Fill the (possibly empty) fences from the deployed service list.
+    sync = ts_policy_sync()
+    return {"ok": sync["ok"], "added": added, "error": sync["error"]}
+
+
 # =========================================================================
 # Core operations -- pure logic returning result dicts (no HTML)
 # =========================================================================
@@ -1298,19 +1600,31 @@ def op_install(req):
         if not image:
             return {"ok": False, "name": name, "error": "An image is required.", "output": ""}
 
-    # Tailscale is mandatory: resolve (and require) an auth key. A pod that
-    # already carries enrolled state in ./tailscale/ can re-run without one.
+    # Tailscale is mandatory: resolve an auth key. Priority: pasted key
+    # (manual override) > existing key file > auto-mint via the keys API
+    # when a credential is configured. A pod that already carries enrolled
+    # state in ./tailscale/ tolerates a spent key file.
     auth_key_file = os.path.join(PODS_DIR, name, ".tailscale_authkey")
     pasted = (req.get("authkey") or "").strip()
     if pasted:
-        os.makedirs(os.path.dirname(auth_key_file), exist_ok=True)
-        with open(auth_key_file, "w") as f:
-            f.write(pasted + "\n")
-        os.chmod(auth_key_file, 0o600)
+        _write_secret(auth_key_file, pasted + "\n")
     elif not os.path.isfile(auth_key_file):
-        return {"ok": False, "name": name,
-                "error": "An auth key is required — every pod enrolls as its own Tailscale node.",
-                "output": ""}
+        if _ts_token():
+            mint = ts_mint_pod_key(name)
+            if not mint["ok"]:
+                return {"ok": False, "name": name,
+                        "error": "Couldn't mint an auth key automatically "
+                                 f"({mint['error']}). Paste a key manually, or "
+                                 "fix the API credential under Settings.",
+                        "output": ""}
+            _write_secret(auth_key_file, mint["key"] + "\n")
+        else:
+            return {"ok": False, "name": name,
+                    "error": "An auth key is required — every pod enrolls as "
+                             "its own Tailscale node. Paste one, or configure "
+                             "the Tailscale API credential (Settings) so "
+                             "Tailarr mints keys automatically.",
+                    "output": ""}
 
     volumes = dict(req.get("volumes") or {})
     reg = load_shares()
@@ -2038,7 +2352,12 @@ def op_attach(pod, sname):
 # =========================================================================
 def api_get(path):
     if path == "/api/info":
-        return 200, {"pods_dir": PODS_DIR, "controller_pods": sorted(CONTROLLER_PODS)}
+        return 200, {"pods_dir": PODS_DIR,
+                     "controller_pods": sorted(CONTROLLER_PODS),
+                     "version": VERSION,
+                     "tsapi": status_tsapi()}
+    if path == "/api/tsapi":
+        return 200, status_tsapi()
     if path == "/api/pods":
         maybe_check_updates()  # daily background refresh, piggybacked here
         return 200, {"pods": status_pods()}
@@ -2166,6 +2485,18 @@ def api_post(path, data):
 
     if path == "/api/users/keys":
         result = op_user_key()
+        return (200 if result["ok"] else 400), result
+
+    # --- credential wizard (Settings) ---
+    if path == "/api/tsapi/validate":
+        return 200, op_tsapi_validate(data)  # per-capability result body
+
+    if path == "/api/tsapi/fences":
+        result = op_policy_init_fences()
+        return (200 if result["ok"] else 400), result
+
+    if path == "/api/tsapi":
+        result = op_tsapi_save(data)
         return (200 if result["ok"] else 400), result
 
     # Must precede the /api/users/<id> match — "adopt" is a valid node-ID

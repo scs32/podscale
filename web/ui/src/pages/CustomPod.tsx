@@ -5,6 +5,7 @@ import { api } from "../api";
 import { Field, FormSection } from "../components/Form";
 import { SharePicker } from "../components/SharePicker";
 import { InstallResultView } from "../components/InstallResultView";
+import { AuthKeyField } from "../components/AuthKeyField";
 import { parsePairs, parseVolumes } from "../lib/pairs";
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -19,12 +20,14 @@ export function CustomPod() {
   const [volsText, setVolsText] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
   const [authkey, setAuthkey] = useState("");
+  const [tsapiOk, setTsapiOk] = useState<boolean | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<InstallResult | null>(null);
 
   useEffect(() => {
     api.shares().then(setShares).catch(() => {});
+    api.info().then((i) => setTsapiOk(i.tsapi.configured)).catch(() => {});
   }, []);
 
   const nameErr =
@@ -128,17 +131,12 @@ export function CustomPod() {
             Every pod gets its own tailnet identity with HTTPS via{" "}
             <code>tailscale serve</code> on its first port.
           </p>
-          <Field
-            label="Tailscale auth key"
-            hint="Leave blank only if this pod already has enrolled Tailscale state."
-          >
-            <input
-              className="input"
-              autoComplete="off"
-              value={authkey}
-              onChange={(e) => setAuthkey(e.target.value)}
-            />
-          </Field>
+          <AuthKeyField
+            configured={tsapiOk}
+            value={authkey}
+            onChange={setAuthkey}
+            onConfigured={() => setTsapiOk(true)}
+          />
         </FormSection>
 
         <SharePicker shares={shares} picked={picked} onChange={setPicked} />

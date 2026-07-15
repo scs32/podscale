@@ -4,6 +4,7 @@ import { api } from "../api";
 import { Alert } from "../components/Alert";
 import { ChipPicker } from "../components/ChipPicker";
 import { FlashView, useFlash } from "../components/Flash";
+import { TsApiWizard } from "../components/TsApiWizard";
 
 function ago(iso: string): string {
   if (!iso) return "";
@@ -118,16 +119,13 @@ export function Users() {
       {status === null ? (
         <p style={{ color: "var(--muted)", marginTop: "var(--sp-5)" }}>Loading…</p>
       ) : !status.configured ? (
-        <div style={{ marginTop: "var(--sp-5)" }}>
+        <div style={{ marginTop: "var(--sp-5)", maxWidth: 640 }}>
           <Alert kind="info">
-            No Tailscale API credential on the controller. Preferred: create
-            an OAuth client (admin console → Settings → OAuth clients) scoped
-            to devices/auth keys/policy file, tagged{" "}
-            <code>tag:tailarr-ctrl</code>, and store{" "}
-            <code>{'{"oauth_client_id": "...", "oauth_client_secret": "..."}'}</code>{" "}
-            in <code>Pods/.tsapi.json</code>. A static{" "}
-            <code>{'{"token": "..."}'}</code> API key also works.
+            Managing users needs a Tailscale API credential on the
+            controller — set one up below (it also unlocks automatic auth-key
+            minting for deploys).
           </Alert>
+          <TsApiWizard onDone={refresh} />
         </div>
       ) : status.error ? (
         <div style={{ marginTop: "var(--sp-5)" }}>

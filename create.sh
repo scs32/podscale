@@ -23,14 +23,22 @@ main() {
         exit 1
     fi
     
-    # Save config for debugging (contains no secrets - only the key file path)
-    echo "$config_json" > ./.last-config.json
-    
+    # Save config for debugging (contains no secrets - only the key file
+    # path). Best-effort: the CWD may be invalid or read-only.
+    echo "$config_json" > ./.last-config.json 2>/dev/null || true
+
     # Parse basic service info
     source "$SCRIPT_DIR/parse-service-config.sh"
     local service_info
     service_info=$(parse_service_config "$config_json")
-    
+
+    # The target log dir is now known: point the deployment log at the
+    # service dir (unless the caller pinned an absolute LOG_FILE via env).
+    # init_logging never fails — a deploy must not die over a log file.
+    local service_dir
+    service_dir=$(jq -r '.service_dir' <<<"$service_info")
+    init_logging "$service_dir"
+
     # Create service directory structure
     source "$SCRIPT_DIR/setup-service-env.sh"
     setup_service_environment "$service_info"
@@ -41,8 +49,6 @@ main() {
 
     # Persist the parsed config beside the scripts (no secrets - the auth
     # key travels as a file path only). Used by update tooling.
-    local service_dir
-    service_dir=$(jq -r '.service_dir' <<<"$service_info")
     echo "$service_info" > "$service_dir/.config.json"
     
     # Display completion message
