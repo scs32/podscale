@@ -169,6 +169,112 @@ try:
 except urllib.error.HTTPError as e:
     check(e.code == 404, "unknown API path -> 404")
 
+# --- deploys leave their log in the service dir (bad-CWD regression) ---
+check(os.path.isfile(os.path.join(pods, "apitest", ".deployment.log")),
+      "install wrote .deployment.log into the pod dir (absolute LOG_FILE)")
+
+# --- credential wizard: status + validate/save/fences, no credential yet ---
+code, data = get("/api/info")
+check(code == 200 and data.get("version") and data.get("tsapi") is not None,
+      "GET /api/info carries version + tsapi state")
+code, data = get("/api/tsapi")
+check(code == 200 and data["configured"] is False,
+      "GET /api/tsapi: not configured on a fresh install")
+code, data = post("/api/tsapi/validate", {})
+check(data["ok"] is False and "credential" in (data["error"] or "").lower(),
+      "validate with no credential explains itself")
+code, data = post("/api/tsapi", {})
+check(code == 400 and data["ok"] is False,
+      "save with no credential -> 400")
+code, data = post("/api/tsapi/fences", {})
+check(code == 400 and "no API token" in (data["error"] or ""),
+      "fence init without a credential -> 400")
+
+# --- install without a key and without a credential: the wizard trigger ---
+code, data = post("/api/install", {
+    "custom": True, "service": "nokey", "image": "docker.io/alpine:latest"})
+check(code == 400 and data["ok"] is False
+      and "auth key is required" in data["error"]
+      and "Settings" in data["error"],
+      "keyless install without a credential -> 400, points at the wizard")
+
+# --- auto-mint: with a credential + stubbed keys API, zero manual entry ---
+_real_ts_token = app._ts_token
+_real_ts_api = app.ts_api
+_real_policy_sync = app.ts_policy_sync
+minted = {}
+
+
+def _fake_ts_api(method, path, body=None):
+    if method == "POST" and path == "/tailnet/-/keys":
+        minted["body"] = body
+        return 200, {"key": "dummy-test-authkey-minted"}
+    return 200, {}
+
+
+app._ts_token = lambda: "dummy-test-token"
+app.ts_api = _fake_ts_api
+app.ts_policy_sync = lambda: {"ok": True, "changed": False, "error": None}
+try:
+    code, data = post("/api/install", {
+        "custom": True, "service": "autominted",
+        "image": "docker.io/alpine:latest", "command": "sleep infinity"})
+    check(code == 200 and data["ok"],
+          "keyless install with a credential auto-mints and succeeds")
+    keyfile = os.path.join(pods, "autominted", ".tailscale_authkey")
+    check(os.path.isfile(keyfile)
+          and open(keyfile).read().strip() == "dummy-test-authkey-minted",
+          "minted key written to the pod's key file")
+    check(os.stat(keyfile).st_mode & 0o777 == 0o600,
+          "minted key file is 0600")
+    caps = minted["body"]["capabilities"]["devices"]["create"]
+    check(caps["tags"] == ["tag:tailarr"] and caps["preauthorized"] is True
+          and caps["reusable"] is False and caps["ephemeral"] is False,
+          "minted key is single-use, preauthorized, tagged tag:tailarr")
+    check(minted["body"]["expirySeconds"] > 0
+          and "autominted" in minted["body"]["description"],
+          "minted key has a TTL and a descriptive description")
+    # pasted keys still override minting
+    code, data = post("/api/install", {
+        "custom": True, "service": "pastedkey",
+        "image": "docker.io/alpine:latest",
+        "authkey": "dummy-test-authkey-pasted"})
+    pastedfile = os.path.join(pods, "pastedkey", ".tailscale_authkey")
+    check(code == 200 and data["ok"]
+          and open(pastedfile).read().strip() == "dummy-test-authkey-pasted",
+          "a pasted key overrides auto-minting")
+    check(os.stat(pastedfile).st_mode & 0o777 == 0o600,
+          "pasted key file is 0600")
+finally:
+    app._ts_token = _real_ts_token
+    app.ts_api = _real_ts_api
+    app.ts_policy_sync = _real_policy_sync
+
+# --- wizard save: stub the live probe, expect a 0600 whitelisted file ---
+_real_validate = app.op_tsapi_validate
+app.op_tsapi_validate = lambda data: {
+    "ok": True, "mode": "token",
+    "checks": {k: {"ok": True, "detail": None}
+               for k in ("devices", "auth_keys", "policy_file")},
+    "fences": {"present": list(app.FENCE_SECTIONS), "missing": []},
+    "error": None}
+try:
+    code, data = post("/api/tsapi", {"token": "dummy-test-authkey-tsapi",
+                                     "junk": "must-not-persist"})
+    check(code == 200 and data["ok"] and data["saved"],
+          "POST /api/tsapi validates then saves")
+    saved = json.load(open(os.path.join(pods, ".tsapi.json")))
+    check(saved == {"token": "dummy-test-authkey-tsapi"},
+          ".tsapi.json holds exactly the whitelisted credential fields")
+    check(os.stat(os.path.join(pods, ".tsapi.json")).st_mode & 0o777 == 0o600,
+          ".tsapi.json is 0600")
+    code, data = get("/api/tsapi")
+    check(code == 200 and data["configured"] and data["mode"] == "token",
+          "GET /api/tsapi reports the saved credential")
+finally:
+    app.op_tsapi_validate = _real_validate
+    os.remove(os.path.join(pods, ".tsapi.json"))  # keep later tests offline
+
 # --- catalog sources: add a URL source, merge, install from it, delete ---
 code, data = post("/api/sources", {"do": "add", "name": "community", "url": CAT_URL})
 check(code == 200 and data["ok"] and "1 services" in (data.get("message") or ""),

@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
+import { api } from "../api";
 import {
   GridIcon,
   StoreIcon,
@@ -22,6 +24,10 @@ const NAV = [
 ];
 
 export function Sidebar() {
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    api.info().then((i) => setVersion(i.version)).catch(() => {});
+  }, []);
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -44,10 +50,26 @@ export function Sidebar() {
         </NavLink>
       ))}
       <div className="spacer" />
-      <a className="nav-item" aria-disabled="true">
+      <NavLink
+        to="/settings"
+        className={({ isActive }) =>
+          "nav-item" + (isActive ? " nav-item--active" : "")
+        }
+      >
         <GearIcon className="nav-icon" />
         Settings
-      </a>
+      </NavLink>
+      {version && (
+        <div
+          style={{
+            padding: "var(--sp-2) var(--sp-4)",
+            color: "var(--muted)",
+            fontSize: "0.75rem",
+          }}
+        >
+          Tailarr v{version}
+        </div>
+      )}
     </aside>
   );
 }

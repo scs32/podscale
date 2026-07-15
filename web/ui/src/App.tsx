@@ -8,6 +8,7 @@ import { Shares } from "./pages/Shares";
 import { Network } from "./pages/Network";
 import { Monitor } from "./pages/Monitor";
 import { Users } from "./pages/Users";
+import { Settings } from "./pages/Settings";
 
 function Layout() {
   return (
@@ -23,6 +24,7 @@ function Layout() {
           <Route path="/network" element={<Network />} />
           <Route path="/users" element={<Users />} />
           <Route path="/monitor" element={<Monitor />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Dashboard />} />
         </Routes>
       </main>

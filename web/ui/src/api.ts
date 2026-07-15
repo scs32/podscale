@@ -19,6 +19,9 @@ import type {
   Share,
   ShareResult,
   Source,
+  TsApiCredential,
+  TsApiProbe,
+  TsApiStatus,
   UpdatesInfo,
   UsersStatus,
 } from "./types";
@@ -103,6 +106,20 @@ export const api = {
   userKey: () =>
     postJSON<{ ok: boolean; error: string | null; key: string }>(
       "/api/users/keys",
+      {},
+    ),
+
+  tsapi: () => getJSON<TsApiStatus>("/api/tsapi"),
+
+  tsapiValidate: (cred: TsApiCredential) =>
+    postJSON<TsApiProbe>("/api/tsapi/validate", cred),
+
+  tsapiSave: (cred: TsApiCredential) =>
+    postJSON<TsApiProbe>("/api/tsapi", cred),
+
+  tsapiFences: () =>
+    postJSON<{ ok: boolean; added: string[]; error: string | null }>(
+      "/api/tsapi/fences",
       {},
     ),
 
