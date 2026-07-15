@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fresh installs pin the controller image to the release the scripts ship
+  with (`ghcr.io/scs32/tailarr:v<VERSION>`) instead of `:latest`, closing
+  the GHCR manifest-lag window right after a release. `HOMEPOD_IMAGE`
+  still overrides. CI now fails if the bootstrap pin and the controller
+  `VERSION` disagree.
+
 ## v0.6.0 — onboarding: credential wizard + auto-minted keys (2026-07-15)
 
 The release that removes both manual steps from a fresh install: no more
