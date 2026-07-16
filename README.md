@@ -131,6 +131,10 @@ native Plex/Jellyfin at that mount for full-speed local playback with
 hardware transcoding. Narrow the export CIDR to your LAN, or export to
 the VM's Tailscale address and mount over the tailnet.
 
+Or skip the manual steps: as of v0.9.0 the web UI manages exports —
+**Shares page → NFS…** on any share (enter the allowed clients, pick
+read-only, done). Only `apt install -y nfs-kernel-server` stays manual.
+
 ## Running on macOS with apple/container (not recommended for media)
 
 > **⚠️ DERP relay warning.** apple/container puts guests behind a NAT'd

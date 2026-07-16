@@ -36,7 +36,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -47,7 +47,18 @@ CONTROLLER_PODS = {"tailarr", "podscale", "homepod"}  # older names = pre-rename
 
 # Shared media folders (the only thing allowed to pierce the pod barrier).
 # Each share: {"host_path": "/data", "container_path": "/data", "ro": false}
+# plus an optional "nfs": {"clients": "...", "ro": true} when the share is
+# exported to machines OUTSIDE the pod world (e.g. a native Plex on the
+# macOS machine hosting this VM) via the host kernel's NFS server.
 SHARES_FILE = os.path.join(PODS_DIR, ".shares.json")
+EXPORTS_FRAGMENT = os.path.join(PODS_DIR, ".exports")
+EXPORTS_HOST_FILE = "/etc/exports.d/tailarr.exports"
+NFS_HELPER = "tailarr-nfs"  # one-shot helper that applies exports on the host
+MOUNTS_HELPER = "tailarr-mounts"  # one-shot helper for the systemd drop-in
+UNIT_DROPIN_DIR = "/etc/systemd/system/tailarr-pods.service.d"
+# One export-client token: IP, CIDR, hostname, or wildcard. No parens,
+# quotes, or whitespace — those would change the /etc/exports syntax.
+NFS_CLIENT_RE = re.compile(r"[A-Za-z0-9.\-*/:_]+")
 
 # External catalog sources: a registry of URLs to extra catalogs
 # (homelab.js JSON schema) whose services are merged into the catalog.
@@ -1829,6 +1840,7 @@ def status_shares():
             "mode": "read-only" if s.get("ro") else "read-write",
             "visible": os.path.isdir(s["host_path"]),
             "used_by": usage.get(name, []),
+            "nfs": s.get("nfs") or None,
         })
     return out
 
@@ -2557,18 +2569,182 @@ def op_share_add(name, host_path, container_path, ro):
 
     shares[name] = {"host_path": host, "container_path": cont, "ro": bool(ro)}
     save_shares(shares)
+    _sync_mounts_dropin()  # boot unit waits for this share's backing mount
     return {"ok": True, "name": name, "error": None,
             "message": f"Added share '{name}'.", "share": shares[name]}
 
 
 def op_share_delete(name):
     shares = load_shares()
-    if shares.pop(name, None) is None:
+    gone = shares.pop(name, None)
+    if gone is None:
         return {"ok": False, "name": name, "error": "Unknown share."}
     save_shares(shares)
+    _sync_mounts_dropin()
+    extra = ""
+    if gone.get("nfs"):
+        ok, out, _ = _nfs_apply()  # registry already saved: drops its export
+        extra = (" Its NFS export was removed." if ok
+                 else f" NFS export cleanup failed: {out}")
     return {"ok": True, "name": name, "error": None,
             "message": f"Deleted share '{name}'. Pods that mount it keep their volume"
-                       " until re-rendered."}
+                       f" until re-rendered.{extra}"}
+
+
+# =========================================================================
+# NFS exports (share media OUT of the VM, e.g. to a native Plex on the Mac
+# hosting it — the recommended macOS layout keeps media on a VM-local disk)
+# =========================================================================
+def _render_exports(shares):
+    """The /etc/exports.d fragment for every NFS-enabled share.
+
+    Read-only exports squash everyone to nobody; read-write maps to the
+    catalog's PUID/PGID 1000 so pod-written files stay editable. `insecure`
+    lets macOS mount without forcing a reserved source port (Finder's
+    Connect to Server doesn't use one)."""
+    lines = ["# Managed by Tailarr (Shares page) - do not edit; changes are",
+             "# overwritten on every apply. Source: " + EXPORTS_FRAGMENT]
+    for name, s in sorted(shares.items()):
+        nfs = s.get("nfs")
+        if not nfs:
+            continue
+        if nfs.get("ro", True):
+            opts = "ro,all_squash,insecure"
+        else:
+            opts = "rw,all_squash,anonuid=1000,anongid=1000,insecure"
+        specs = " ".join(f"{c}({opts})" for c in nfs["clients"].split())
+        lines.append(f"{s['host_path']} {specs}")
+    return "\n".join(lines) + "\n"
+
+
+def _host_exec(helper, script, timeout=60):
+    """Run a shell script on the HOST via a one-shot privileged helper.
+
+    The controller is containerized, but some state it manages lives on
+    the actual host (kernel NFS exports, systemd drop-ins). The helper
+    runs the controller's own image with --pid=host and nsenter's into
+    PID 1's namespaces, so `script` executes on the host proper. Returns
+    (rc, output); rc -1 = podman/controller unavailable (dev/CI runs)."""
+    name = _controller_name()
+    if not name:
+        return -1, ("podman (or the controller container) is not "
+                    "reachable - cannot touch the host.")
+    ins = podman("inspect", name, "--format", "{{.ImageName}}", timeout=30)
+    image = ins.stdout.strip()
+    if ins.returncode != 0 or not image:
+        return -1, "Could not determine the controller image."
+    r = podman("run", "--rm", "--name", helper,
+               "--privileged", "--pid=host", image,
+               "nsenter", "-t", "1", "-m", "-n", "-u", "--",
+               "sh", "-c", script, timeout=timeout)
+    return r.returncode, r.stdout + r.stderr
+
+
+def _sync_mounts_dropin():
+    """Order the boot unit after every share's backing mount (drop-in).
+
+    Media commonly lives on its own disk mounted `nofail`: systemd can
+    reach network-online (and start the fleet) before that mount lands,
+    and podman happily bind-mounts the EMPTY mountpoint directory — pods
+    come up with no media until a manual restart (reproduced in the
+    field). RequiresMountsFor makes tailarr-pods.service pull in and wait
+    for the mount units backing every registered share; for paths that
+    aren't separate mounts it's satisfied trivially. Written as a drop-in
+    so it survives bootstrap re-runs and never clobbers user overrides.
+    Best-effort: silently skipped when the host has no systemd unit."""
+    paths = [PODS_DIR] + sorted(s["host_path"]
+                                for s in load_shares().values())
+    # Rendered into a shell script and a space-separated unit setting:
+    # skip anything that can't survive either encoding.
+    paths = [p for p in dict.fromkeys(paths)
+             if p and not re.search(r"[\s'\"]", p)]
+    content = ("# Managed by Tailarr - regenerated whenever shares change.\n"
+               "[Unit]\n"
+               f"RequiresMountsFor={' '.join(paths)}\n")
+    script = (
+        "[ -f /etc/systemd/system/tailarr-pods.service ] || exit 0; "
+        f"mkdir -p {UNIT_DROPIN_DIR} && "
+        f"printf '%s' '{content}' > {UNIT_DROPIN_DIR}/50-tailarr-mounts.conf "
+        "&& systemctl daemon-reload"
+    )
+    rc, out = _host_exec(MOUNTS_HELPER, script)
+    if rc > 0:
+        print(f"mounts drop-in sync failed: {out.strip()}")
+
+
+def _nfs_apply():
+    """Install the exports fragment on the HOST and (re)load kernel nfsd.
+
+    NFS is served by the VM's kernel, not by any container. The controller
+    writes the fragment under PODS_DIR (a host path, mounted 1:1); the
+    host-side helper copies it into /etc/exports.d and runs exportfs.
+    Returns (ok, output, host_ip)."""
+    with open(EXPORTS_FRAGMENT, "w") as f:
+        f.write(_render_exports(load_shares()))
+
+    host_script = (
+        "set -e; "
+        "command -v exportfs >/dev/null 2>&1 || "
+        "{ echo NFS-SERVER-MISSING; exit 9; }; "
+        f"mkdir -p /etc/exports.d && cp {EXPORTS_FRAGMENT} {EXPORTS_HOST_FILE}; "
+        "systemctl enable --now nfs-server >/dev/null 2>&1 || true; "
+        "exportfs -ra; "
+        "echo EXPORTS:; exportfs; "
+        "echo HOSTIP: $(hostname -I 2>/dev/null)"
+    )
+    rc, out = _host_exec(NFS_HELPER, host_script)
+    if "NFS-SERVER-MISSING" in out or rc == 9:
+        return False, ("The host has no NFS server. On the VM, run:\n"
+                       "  apt install -y nfs-kernel-server\n"
+                       "then toggle the export again."), ""
+    if rc != 0:
+        return False, out, ""
+    ip = ""
+    m = re.search(r"HOSTIP:\s*(\S+)", out)
+    if m:
+        ip = m.group(1)
+    return True, out, ip
+
+
+def op_share_nfs(name, enabled, clients, ro):
+    """Enable/disable an NFS export for a share. Returns a result dict."""
+    shares = load_shares()
+    share = shares.get(name or "")
+    if not share:
+        return {"ok": False, "name": name, "error": "Unknown share."}
+
+    if enabled:
+        tokens = (clients or "").split()
+        if not tokens:
+            return {"ok": False, "name": name,
+                    "error": "Allowed clients required - an IP, a CIDR like "
+                             "192.168.1.0/24, or a hostname (space-separated "
+                             "for several)."}
+        bad = [t for t in tokens if not NFS_CLIENT_RE.fullmatch(t)]
+        if bad:
+            return {"ok": False, "name": name,
+                    "error": f"Invalid client spec: {' '.join(bad)}"}
+        share["nfs"] = {"clients": " ".join(tokens), "ro": bool(ro)}
+    else:
+        if share.pop("nfs", None) is None:
+            return {"ok": False, "name": name,
+                    "error": "This share has no NFS export."}
+    save_shares(shares)
+
+    ok, out, ip = _nfs_apply()
+    if not ok:
+        return {"ok": False, "name": name, "error": out,
+                "message": None, "output": out}
+    if enabled:
+        where = ip or "<vm-ip>"
+        msg = (f"NFS export live. Mount from an allowed client: "
+               f"nfs://{where}{share['host_path']}  (Finder: Go > Connect "
+               f"to Server, or: mount -t nfs -o resvport "
+               f"{where}:{share['host_path']} <mountpoint>)")
+    else:
+        msg = f"NFS export removed for '{name}'."
+    return {"ok": True, "name": name, "error": None,
+            "message": msg, "output": out}
 
 
 def op_source_add(name, url):
@@ -2843,6 +3019,9 @@ def api_post(path, data):
             result = op_share_delete(data.get("name"))
         elif action == "attach":
             result = op_attach(data.get("pod"), data.get("share"))
+        elif action == "nfs":
+            result = op_share_nfs(data.get("name"), bool(data.get("enabled")),
+                                  data.get("clients"), bool(data.get("ro", True)))
         else:
             return 400, {"ok": False, "error": "Unknown action."}
         return (200 if result["ok"] else 400), result
@@ -2987,4 +3166,7 @@ if __name__ == "__main__":
     print(f"Tailarr web UI on :{PORT} (pods dir: {PODS_DIR})")
     maybe_check_updates()  # kick a first check if the cache is stale
     threading.Thread(target=_serve_ensure_loop, daemon=True).start()
+    # Existing installs get the mounts drop-in on first start after an
+    # upgrade, not only when shares next change.
+    threading.Thread(target=_sync_mounts_dropin, daemon=True).start()
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

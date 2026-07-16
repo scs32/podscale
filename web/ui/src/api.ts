@@ -178,6 +178,15 @@ export const api = {
   shareAttach: (pod: string, share: string) =>
     postJSON<ShareResult>("/api/shares", { do: "attach", pod, share }),
 
+  shareNfs: (name: string, enabled: boolean, clients = "", ro = true) =>
+    postJSON<ShareResult>("/api/shares", {
+      do: "nfs",
+      name,
+      enabled,
+      clients,
+      ro,
+    }),
+
   sources: () =>
     getJSON<{ sources: Source[]; catalogs: BuiltinCatalog[] }>("/api/sources"),
 

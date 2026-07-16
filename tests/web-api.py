@@ -428,6 +428,124 @@ check(code == 200 and data["ok"] and data["results"]
       "fleet rerender re-renders and restarts every non-controller pod")
 check(os.path.getmtime(runsh) >= before, "rerender rewrote the pod's run.sh")
 
+# --- NFS exports (podman faked in-process) --------------------------------
+# The controller renders Pods/.exports and applies it on the HOST through a
+# privileged nsenter helper. Assert the rendered exports syntax, the helper
+# invocation shape, registry round-trips, and the friendly no-nfsd error.
+
+
+class FakeNfsPodman:
+    def __init__(self):
+        self.calls = []
+        self.mode = "ok"
+
+    def __call__(self, *args, timeout=60):
+        self.calls.append(list(args))
+        if args[0] == "ps":
+            return _sp.CompletedProcess(args, 0, "tailarr\ntailscale-tailarr\n", "")
+        if args[0] == "inspect":
+            return _sp.CompletedProcess(args, 0, "ghcr.io/scs32/tailarr:v9.9.9\n", "")
+        if args[0] == "run":
+            if self.mode == "missing":
+                return _sp.CompletedProcess(args, 9, "NFS-SERVER-MISSING\n", "")
+            return _sp.CompletedProcess(
+                args, 0, "EXPORTS:\n/data 192.168.1.0/24\nHOSTIP: 192.168.64.7\n", "")
+        return _sp.CompletedProcess(args, 0, "", "")
+
+
+_real_podman = app.podman
+nfs_fake = FakeNfsPodman()
+app.podman = nfs_fake
+try:
+    code, data = post("/api/shares", {"do": "nfs", "name": "media",
+                                      "enabled": True})
+    check(code == 400 and "clients required" in data["error"],
+          "nfs enable without a client list refused")
+    code, data = post("/api/shares", {"do": "nfs", "name": "media",
+                                      "enabled": True,
+                                      "clients": "10.0.0.1;rm -rf /"})
+    check(code == 400 and "Invalid client" in data["error"],
+          "shell/exports metacharacters in clients rejected")
+    code, data = post("/api/shares", {"do": "nfs", "name": "nope",
+                                      "enabled": True, "clients": "10.0.0.1"})
+    check(code == 400 and "Unknown share" in data["error"],
+          "nfs on an unknown share rejected")
+
+    code, data = post("/api/shares", {"do": "nfs", "name": "media",
+                                      "enabled": True,
+                                      "clients": "192.168.1.0/24"})
+    check(code == 200 and data["ok"]
+          and "nfs://192.168.64.7/data" in data["message"],
+          "nfs enable succeeds; message carries the exact mount URL")
+    with open(os.path.join(pods, ".exports")) as f:
+        frag = f.read()
+    check("/data 192.168.1.0/24(ro,all_squash,insecure)" in frag,
+          "exports fragment: read-only, squashed, mac-mountable")
+    helper = next(c for c in nfs_fake.calls if c[0] == "run")
+    check("--privileged" in helper and "--pid=host" in helper
+          and "nsenter" in helper and "ghcr.io/scs32/tailarr:v9.9.9" in helper,
+          "helper nsenter's into the host from a privileged one-shot container")
+    code, data = get("/api/shares")
+    media = next(s for s in data["shares"] if s["name"] == "media")
+    check(media["nfs"] == {"clients": "192.168.1.0/24", "ro": True},
+          "export persisted in the shares registry")
+
+    code, data = post("/api/shares", {"do": "nfs", "name": "media",
+                                      "enabled": True,
+                                      "clients": "192.168.1.5 mac.local",
+                                      "ro": False})
+    check(code == 200 and data["ok"], "read-write export with two clients")
+    with open(os.path.join(pods, ".exports")) as f:
+        frag = f.read()
+    check("192.168.1.5(rw,all_squash,anonuid=1000,anongid=1000,insecure)" in frag
+          and "mac.local(rw," in frag,
+          "rw export maps writes to PUID 1000; every client gets the options")
+
+    nfs_fake.mode = "missing"
+    code, data = post("/api/shares", {"do": "nfs", "name": "media",
+                                      "enabled": True, "clients": "10.0.0.1"})
+    check(code == 400 and "nfs-kernel-server" in data["error"],
+          "host without nfsd gets the one-line install hint")
+    nfs_fake.mode = "ok"
+
+    code, data = post("/api/shares", {"do": "nfs", "name": "media",
+                                      "enabled": False})
+    check(code == 200 and data["ok"], "nfs disable succeeds")
+    with open(os.path.join(pods, ".exports")) as f:
+        frag = f.read()
+    check("/data " not in frag, "disable drops the share from the fragment")
+    code, data = get("/api/shares")
+    media = next(s for s in data["shares"] if s["name"] == "media")
+    check(media["nfs"] is None, "registry cleared on disable")
+    code, data = post("/api/shares", {"do": "nfs", "name": "media",
+                                      "enabled": False})
+    check(code == 400 and "no NFS export" in data["error"],
+          "disabling a non-exported share refused")
+
+    # --- systemd mounts drop-in: adding a share must order the boot unit
+    # after its backing mount (nofail media disks raced the fleet at boot
+    # and pods bind-mounted an empty /data — field report).
+    nfs_fake.calls = []
+    code, data = post("/api/shares", {"do": "add", "name": "disk2",
+                                      "host_path": "/data2"})
+    check(code == 200 and data["ok"], "share add succeeds with podman present")
+    dropin = [c for c in nfs_fake.calls if c[0] == "run"
+              and "RequiresMountsFor" in " ".join(c)]
+    check(bool(dropin), "share add syncs the RequiresMountsFor drop-in")
+    joined = " ".join(dropin[0])
+    check("/data2" in joined and pods in joined
+          and "daemon-reload" in joined
+          and "tailarr-pods.service.d" in joined,
+          "drop-in covers PODS_DIR + the new share and reloads systemd")
+    nfs_fake.calls = []
+    code, data = post("/api/shares", {"do": "delete", "name": "disk2"})
+    check(code == 200 and any(
+        c[0] == "run" and "RequiresMountsFor" in " ".join(c)
+        for c in nfs_fake.calls),
+        "share delete re-syncs the drop-in")
+finally:
+    app.podman = _real_podman
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

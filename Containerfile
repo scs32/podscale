@@ -19,7 +19,9 @@ RUN npm run build
 FROM docker.io/library/alpine:3.20
 
 # skopeo: remote digest lookups for the daily image-update checks
-RUN apk add --no-cache bash jq python3 podman skopeo
+# util-linux: nsenter, used by the NFS-export helper to run exportfs on the
+# actual host (the controller manages /etc/exports.d through it)
+RUN apk add --no-cache bash jq python3 podman skopeo util-linux
 # uptime-kuma-api: socket.io client behind the Monitor tab (Kuma has no
 # REST API for monitor CRUD)
 RUN apk add --no-cache py3-pip \
