@@ -141,6 +141,9 @@ export interface Share {
   mode: "read-only" | "read-write";
   visible: boolean;
   used_by: string[];
+  // Host-kernel NFS export (share media OUT of the VM, e.g. to a native
+  // Plex on the machine hosting it). null = not exported.
+  nfs: { clients: string; ro: boolean } | null;
 }
 
 // One per-pod snapshot (GET /api/pods/<name>/backups).

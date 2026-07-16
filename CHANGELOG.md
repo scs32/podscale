@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.9.0 — NFS exports on the Shares page (2026-07-16)
+
+The recommended macOS layout (see the README's new full-VM section) keeps
+media on a VM-local virtual disk — so the machine *hosting* the VM needs a
+way back in for a native Plex with hardware transcoding. That's now a
+toggle.
+
+### Features
+
+- **NFS export per share.** Shares page → "NFS…" on any share: enter the
+  allowed clients (IP / CIDR / hostname, space-separated), choose
+  read-only (default; read-write maps writes to PUID/PGID 1000), enable.
+  Tailarr renders `/etc/exports.d/tailarr.exports` and reloads the **host
+  kernel's** NFS server through a one-shot privileged helper that
+  `nsenter`s into the host (the controller itself stays in its container).
+  The success message includes the exact `nfs://<vm-ip>/...` mount URL for
+  the Mac. Deleting a share cleans up its export; a host without
+  `nfs-kernel-server` gets a friendly one-line install hint instead of a
+  stack trace. Exports use `all_squash` and are limited to the client list
+  you give — no wildcards unless you type one.
+  New API: `POST /api/shares {do: "nfs", name, enabled, clients, ro}`;
+  share objects gain an `nfs` field.
+- README: apple/container demoted with a DERP-relay warning; new
+  recommended macOS path — VMware Fusion Debian VM, bridged networking,
+  media on a VM-local second disk at `/data`, NFS back out to the Mac.
+
+### Notes
+
+- The controller image now includes `util-linux` (nsenter) for the export
+  helper — the feature needs the v0.9.0+ image, not just the code.
+
 ## v0.8.0 — controller self-upgrade (2026-07-16)
 
 The controller can finally update itself — no more SSHing in for the
