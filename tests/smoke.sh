@@ -291,6 +291,14 @@ for key in DestDir InterDir; do
 done
 pass "catalog seeds nzbget DestDir/InterDir under the mounted /data"
 
+# MainDir anchors nzbget's working dirs (queue/tmp/scripts/nzb/log). It must
+# stay in the config volume — MainDir=/data scatters them into the media
+# root (observed in the field).
+mval=$(jq -r '.[] | select(.name == "nzbget") | .config_set.MainDir // ""' "$REPO_DIR/homelab.js")
+[ "$mval" = "/config" ] \
+    || fail "nzbget MainDir must be /config (working dirs out of the media root), got '$mval'"
+pass "nzbget MainDir pinned to /config (no working dirs in the media root)"
+
 # 6b: render nzbget from the catalog (as the controller does) and check
 # the one-time seeding block in run.sh
 : > "$PODMAN_LOG"

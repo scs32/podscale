@@ -113,11 +113,18 @@ chmod +x /root/start-pods.sh
 # the script itself (sidecars, then services). Harmless to re-run; skipped
 # on non-systemd hosts (e.g. apple/container guests with a minimal init).
 if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then
-    cat > /etc/systemd/system/tailarr-pods.service << 'UNITEOF'
+    cat > /etc/systemd/system/tailarr-pods.service << UNITEOF
+# Managed by Tailarr (bootstrap-tailarr.sh). Re-running the bootstrap
+# OVERWRITES this file - put customizations in a drop-in instead:
+#   systemctl edit tailarr-pods     (override.conf survives re-runs)
+# The controller maintains 50-tailarr-mounts.conf in the drop-in dir:
+# RequiresMountsFor for every registered share, so the fleet waits for
+# media disks (nofail mounts!) instead of bind-mounting an empty dir.
 [Unit]
 Description=Tailarr pod fleet (Tailscale sidecars, then services)
 Wants=network-online.target
 After=network-online.target
+RequiresMountsFor=${PODS_DIR}
 
 [Service]
 Type=oneshot
@@ -130,6 +137,7 @@ UNITEOF
     systemctl daemon-reload
     systemctl enable tailarr-pods.service >/dev/null 2>&1 || true
     echo "Enabled tailarr-pods.service (fleet starts at boot)."
+    echo "  (customize via: systemctl edit tailarr-pods - re-runs overwrite the unit itself)"
 fi
 
 mkdir -p "$PODS_DIR/tailarr/tailscale"

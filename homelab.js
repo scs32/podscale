@@ -145,6 +145,7 @@
     },
     "config_file": "/config/nzbget.conf",
     "config_set": {
+      "MainDir": "/config",
       "DestDir": "/data/downloads/completed",
       "InterDir": "/data/downloads/intermediate"
     },

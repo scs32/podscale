@@ -54,6 +54,8 @@ SHARES_FILE = os.path.join(PODS_DIR, ".shares.json")
 EXPORTS_FRAGMENT = os.path.join(PODS_DIR, ".exports")
 EXPORTS_HOST_FILE = "/etc/exports.d/tailarr.exports"
 NFS_HELPER = "tailarr-nfs"  # one-shot helper that applies exports on the host
+MOUNTS_HELPER = "tailarr-mounts"  # one-shot helper for the systemd drop-in
+UNIT_DROPIN_DIR = "/etc/systemd/system/tailarr-pods.service.d"
 # One export-client token: IP, CIDR, hostname, or wildcard. No parens,
 # quotes, or whitespace — those would change the /etc/exports syntax.
 NFS_CLIENT_RE = re.compile(r"[A-Za-z0-9.\-*/:_]+")
@@ -2567,6 +2569,7 @@ def op_share_add(name, host_path, container_path, ro):
 
     shares[name] = {"host_path": host, "container_path": cont, "ro": bool(ro)}
     save_shares(shares)
+    _sync_mounts_dropin()  # boot unit waits for this share's backing mount
     return {"ok": True, "name": name, "error": None,
             "message": f"Added share '{name}'.", "share": shares[name]}
 
@@ -2577,6 +2580,7 @@ def op_share_delete(name):
     if gone is None:
         return {"ok": False, "name": name, "error": "Unknown share."}
     save_shares(shares)
+    _sync_mounts_dropin()
     extra = ""
     if gone.get("nfs"):
         ok, out, _ = _nfs_apply()  # registry already saved: drops its export
@@ -2613,25 +2617,70 @@ def _render_exports(shares):
     return "\n".join(lines) + "\n"
 
 
+def _host_exec(helper, script, timeout=60):
+    """Run a shell script on the HOST via a one-shot privileged helper.
+
+    The controller is containerized, but some state it manages lives on
+    the actual host (kernel NFS exports, systemd drop-ins). The helper
+    runs the controller's own image with --pid=host and nsenter's into
+    PID 1's namespaces, so `script` executes on the host proper. Returns
+    (rc, output); rc -1 = podman/controller unavailable (dev/CI runs)."""
+    name = _controller_name()
+    if not name:
+        return -1, ("podman (or the controller container) is not "
+                    "reachable - cannot touch the host.")
+    ins = podman("inspect", name, "--format", "{{.ImageName}}", timeout=30)
+    image = ins.stdout.strip()
+    if ins.returncode != 0 or not image:
+        return -1, "Could not determine the controller image."
+    r = podman("run", "--rm", "--name", helper,
+               "--privileged", "--pid=host", image,
+               "nsenter", "-t", "1", "-m", "-n", "-u", "--",
+               "sh", "-c", script, timeout=timeout)
+    return r.returncode, r.stdout + r.stderr
+
+
+def _sync_mounts_dropin():
+    """Order the boot unit after every share's backing mount (drop-in).
+
+    Media commonly lives on its own disk mounted `nofail`: systemd can
+    reach network-online (and start the fleet) before that mount lands,
+    and podman happily bind-mounts the EMPTY mountpoint directory — pods
+    come up with no media until a manual restart (reproduced in the
+    field). RequiresMountsFor makes tailarr-pods.service pull in and wait
+    for the mount units backing every registered share; for paths that
+    aren't separate mounts it's satisfied trivially. Written as a drop-in
+    so it survives bootstrap re-runs and never clobbers user overrides.
+    Best-effort: silently skipped when the host has no systemd unit."""
+    paths = [PODS_DIR] + sorted(s["host_path"]
+                                for s in load_shares().values())
+    # Rendered into a shell script and a space-separated unit setting:
+    # skip anything that can't survive either encoding.
+    paths = [p for p in dict.fromkeys(paths)
+             if p and not re.search(r"[\s'\"]", p)]
+    content = ("# Managed by Tailarr - regenerated whenever shares change.\n"
+               "[Unit]\n"
+               f"RequiresMountsFor={' '.join(paths)}\n")
+    script = (
+        "[ -f /etc/systemd/system/tailarr-pods.service ] || exit 0; "
+        f"mkdir -p {UNIT_DROPIN_DIR} && "
+        f"printf '%s' '{content}' > {UNIT_DROPIN_DIR}/50-tailarr-mounts.conf "
+        "&& systemctl daemon-reload"
+    )
+    rc, out = _host_exec(MOUNTS_HELPER, script)
+    if rc > 0:
+        print(f"mounts drop-in sync failed: {out.strip()}")
+
+
 def _nfs_apply():
     """Install the exports fragment on the HOST and (re)load kernel nfsd.
 
     NFS is served by the VM's kernel, not by any container. The controller
-    writes the fragment under PODS_DIR (a host path, mounted 1:1), then a
-    one-shot privileged helper nsenter's into PID 1's namespaces so the
-    copy + `exportfs -ra` run on the actual host. Returns (ok, output,
-    host_ip)."""
+    writes the fragment under PODS_DIR (a host path, mounted 1:1); the
+    host-side helper copies it into /etc/exports.d and runs exportfs.
+    Returns (ok, output, host_ip)."""
     with open(EXPORTS_FRAGMENT, "w") as f:
         f.write(_render_exports(load_shares()))
-
-    name = _controller_name()
-    if not name:
-        return False, ("podman (or the controller container) is not "
-                       "reachable - cannot touch the host."), ""
-    ins = podman("inspect", name, "--format", "{{.ImageName}}", timeout=30)
-    image = ins.stdout.strip()
-    if ins.returncode != 0 or not image:
-        return False, "Could not determine the controller image.", ""
 
     host_script = (
         "set -e; "
@@ -2643,16 +2692,12 @@ def _nfs_apply():
         "echo EXPORTS:; exportfs; "
         "echo HOSTIP: $(hostname -I 2>/dev/null)"
     )
-    r = podman("run", "--rm", "--name", NFS_HELPER,
-               "--privileged", "--pid=host", image,
-               "nsenter", "-t", "1", "-m", "-n", "-u", "--",
-               "sh", "-c", host_script, timeout=60)
-    out = r.stdout + r.stderr
-    if "NFS-SERVER-MISSING" in out or r.returncode == 9:
+    rc, out = _host_exec(NFS_HELPER, host_script)
+    if "NFS-SERVER-MISSING" in out or rc == 9:
         return False, ("The host has no NFS server. On the VM, run:\n"
                        "  apt install -y nfs-kernel-server\n"
                        "then toggle the export again."), ""
-    if r.returncode != 0:
+    if rc != 0:
         return False, out, ""
     ip = ""
     m = re.search(r"HOSTIP:\s*(\S+)", out)
@@ -3121,4 +3166,7 @@ if __name__ == "__main__":
     print(f"Tailarr web UI on :{PORT} (pods dir: {PODS_DIR})")
     maybe_check_updates()  # kick a first check if the cache is stale
     threading.Thread(target=_serve_ensure_loop, daemon=True).start()
+    # Existing installs get the mounts drop-in on first start after an
+    # upgrade, not only when shares next change.
+    threading.Thread(target=_sync_mounts_dropin, daemon=True).start()
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

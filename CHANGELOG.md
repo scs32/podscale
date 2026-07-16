@@ -26,10 +26,32 @@ toggle.
   recommended macOS path — VMware Fusion Debian VM, bridged networking,
   media on a VM-local second disk at `/data`, NFS back out to the Mac.
 
+### Fixes (field report from the v0.6→0.7→0.8 upgrade run)
+
+- **Boot no longer races nofail media mounts.** With `/data` on its own
+  disk mounted `nofail`, systemd could start the fleet before the mount
+  landed and podman bind-mounted the EMPTY mountpoint — pods came up with
+  no media until a manual restart. The controller now maintains a
+  `RequiresMountsFor` drop-in (`tailarr-pods.service.d/50-tailarr-mounts.conf`)
+  covering `PODS_DIR` and every registered share, refreshed on share
+  add/delete and on controller start (so existing installs pick it up on
+  their first post-upgrade boot). The bootstrap unit also gains
+  `RequiresMountsFor=$PODS_DIR`.
+- **The boot unit's overwrite behavior is now documented in the unit
+  itself**: re-running the bootstrap overwrites
+  `/etc/systemd/system/tailarr-pods.service`; customizations belong in a
+  drop-in (`systemctl edit tailarr-pods`), which survives re-runs — as
+  does the controller-managed mounts drop-in.
+- **nzbget: `MainDir` pinned to `/config`.** Seeding only DestDir/InterDir
+  left MainDir free to scatter queue/tmp/scripts/nzb/logs into the media
+  root on some image vintages. Working dirs now stay in the config volume;
+  only completed/intermediate downloads live under `/data`.
+
 ### Notes
 
 - The controller image now includes `util-linux` (nsenter) for the export
-  helper — the feature needs the v0.9.0+ image, not just the code.
+  and drop-in helpers — these features need the v0.9.0+ image, not just
+  the code.
 
 ## v0.8.0 — controller self-upgrade (2026-07-16)
 

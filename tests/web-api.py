@@ -521,6 +521,28 @@ try:
                                       "enabled": False})
     check(code == 400 and "no NFS export" in data["error"],
           "disabling a non-exported share refused")
+
+    # --- systemd mounts drop-in: adding a share must order the boot unit
+    # after its backing mount (nofail media disks raced the fleet at boot
+    # and pods bind-mounted an empty /data — field report).
+    nfs_fake.calls = []
+    code, data = post("/api/shares", {"do": "add", "name": "disk2",
+                                      "host_path": "/data2"})
+    check(code == 200 and data["ok"], "share add succeeds with podman present")
+    dropin = [c for c in nfs_fake.calls if c[0] == "run"
+              and "RequiresMountsFor" in " ".join(c)]
+    check(bool(dropin), "share add syncs the RequiresMountsFor drop-in")
+    joined = " ".join(dropin[0])
+    check("/data2" in joined and pods in joined
+          and "daemon-reload" in joined
+          and "tailarr-pods.service.d" in joined,
+          "drop-in covers PODS_DIR + the new share and reloads systemd")
+    nfs_fake.calls = []
+    code, data = post("/api/shares", {"do": "delete", "name": "disk2"})
+    check(code == 200 and any(
+        c[0] == "run" and "RequiresMountsFor" in " ".join(c)
+        for c in nfs_fake.calls),
+        "share delete re-syncs the drop-in")
 finally:
     app.podman = _real_podman
 
