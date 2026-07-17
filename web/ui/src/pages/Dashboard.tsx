@@ -83,14 +83,7 @@ export function Dashboard() {
 
       <FlashView flash={flash} onClose={clear} />
 
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: "var(--sp-3)",
-        }}
-      >
+      <div className="section-head">
         <div className="section-title">Deployed</div>
         {pods && pods.length > 0 && (
           <div className="preview-row" style={{ gap: "var(--sp-2)" }}>

@@ -3,6 +3,7 @@ import type { BuiltinCatalog, ShareResult, Source } from "../types";
 import { api } from "../api";
 import { Field } from "./Form";
 import { FlashView, useFlash } from "./Flash";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 // Rendered inside the catalog's Sources modal (the modal owns the title).
 export function SourcesPanel({
@@ -18,6 +19,8 @@ export function SourcesPanel({
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [catBusy, setCatBusy] = useState("");
+  const [removing, setRemoving] = useState<Source | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
   const { flash, show, clear } = useFlash();
 
   async function toggleCatalog(c: BuiltinCatalog) {
@@ -111,7 +114,7 @@ export function SourcesPanel({
               )}
               <button
                 className="btn btn--danger btn--sm"
-                onClick={async () => report(await api.sourceDelete(s.name))}
+                onClick={() => setRemoving(s)}
               >
                 Delete
               </button>
@@ -143,6 +146,28 @@ export function SourcesPanel({
       >
         Add source
       </button>
+
+      {removing && (
+        <ConfirmDialog
+          title={`Delete the ${removing.name} source?`}
+          confirmLabel="Delete"
+          busy={removeBusy}
+          onConfirm={async () => {
+            setRemoveBusy(true);
+            try {
+              report(await api.sourceDelete(removing.name));
+              setRemoving(null);
+            } finally {
+              setRemoveBusy(false);
+            }
+          }}
+          onCancel={() => setRemoving(null)}
+        >
+          Its {removing.service_count} service
+          {removing.service_count === 1 ? "" : "s"} disappear from the catalog.
+          Pods already deployed from it keep running.
+        </ConfirmDialog>
+      )}
     </>
   );
 }

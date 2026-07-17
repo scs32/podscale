@@ -4,6 +4,8 @@ import { api } from "../api";
 import { Alert } from "../components/Alert";
 import { ChipPicker } from "../components/ChipPicker";
 import { FlashView, useFlash } from "../components/Flash";
+import { Field } from "../components/Form";
+import { SpinnerIcon } from "../components/Icons";
 import { TsApiWizard } from "../components/TsApiWizard";
 
 function ago(iso: string): string {
@@ -133,20 +135,13 @@ export function Users() {
         </div>
       ) : (
         <>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: "var(--sp-3)",
-            }}
-          >
+          <div className="section-head">
             <div className="section-title">Machines</div>
             <div style={{ display: "flex", gap: "var(--sp-2)" }}>
               <button
                 className="btn btn--ghost btn--sm"
                 title="Tag an already-enrolled tailnet device as a user machine"
-                onClick={() => setAdoptOpen((v) => !v)}
+                onClick={() => setAdoptOpen(true)}
               >
                 Adopt by ID
               </button>
@@ -162,42 +157,50 @@ export function Users() {
           </div>
 
           {adoptOpen && (
-            <div className="card" style={{ padding: "var(--sp-4)", marginTop: "var(--sp-3)" }}>
-              <div className="row__title">Adopt an existing machine</div>
-              <p className="field__hint" style={{ margin: "var(--sp-2) 0" }}>
-                For devices already on the tailnet (e.g. an Apple TV that
-                signed in with an Apple ID). Paste its node ID from the
-                Tailscale admin console (machine page URL, or “Copy node ID”).
-                Tagging replaces the device’s login ownership — it becomes a
-                Tailarr user machine with zero access until you grant
-                services.
-              </p>
-              <div style={{ display: "flex", gap: "var(--sp-2)" }}>
-                <input
-                  className="input"
-                  autoFocus
-                  value={adoptId}
-                  placeholder="node ID, e.g. npaiBkAAg111CNTRL"
-                  onChange={(e) => setAdoptId(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") adopt();
-                    if (e.key === "Escape") setAdoptOpen(false);
-                  }}
-                  style={{ flex: 1 }}
-                />
-                <button
-                  className={"btn btn--primary btn--sm" + (adopting ? " btn--loading" : "")}
-                  disabled={adopting || !adoptId.trim()}
-                  onClick={adopt}
-                >
-                  Adopt
-                </button>
-                <button
-                  className="btn btn--ghost btn--sm"
-                  onClick={() => setAdoptOpen(false)}
-                >
-                  Cancel
-                </button>
+            <div className="scrim" onClick={adopting ? undefined : () => setAdoptOpen(false)}>
+              <div className="modal" onClick={(e) => e.stopPropagation()}>
+                <div className="modal__head">
+                  <span className="modal__title">Adopt an existing machine</span>
+                  <div className="spacer" />
+                  <button
+                    className="btn btn--ghost btn--sm"
+                    disabled={adopting}
+                    onClick={() => setAdoptOpen(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+                <p className="field__hint" style={{ margin: "0 0 var(--sp-3)" }}>
+                  For devices already on the tailnet (e.g. an Apple TV that
+                  signed in with an Apple ID). Paste its node ID from the
+                  Tailscale admin console (machine page URL, or “Copy node ID”).
+                  Tagging replaces the device’s login ownership — it becomes a
+                  Tailarr user machine with zero access until you grant
+                  services.
+                </p>
+                <Field label="Node ID">
+                  <input
+                    className="input"
+                    autoFocus
+                    value={adoptId}
+                    placeholder="e.g. npaiBkAAg111CNTRL"
+                    onChange={(e) => setAdoptId(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") adopt();
+                      if (e.key === "Escape") setAdoptOpen(false);
+                    }}
+                  />
+                </Field>
+                <div className="preview-row">
+                  <button
+                    className={"btn btn--primary" + (adopting ? " btn--loading" : "")}
+                    disabled={adopting || !adoptId.trim()}
+                    onClick={adopt}
+                  >
+                    {adopting && <SpinnerIcon className="btn-icon" />}
+                    Adopt
+                  </button>
+                </div>
               </div>
             </div>
           )}

@@ -1,8 +1,14 @@
 import { useEffect, useState } from "react";
 import type { Share } from "../types";
 import { api } from "../api";
-import { parsePairs, parseVolumes, pairsToText } from "../lib/pairs";
+import { parsePairs, pairsToText } from "../lib/pairs";
 import { Field, FormSection } from "./Form";
+import {
+  FolderEditor,
+  rowsToVolumes,
+  volumesToRows,
+  type FolderRow,
+} from "./FolderEditor";
 import { SharePicker } from "./SharePicker";
 import { BackupsPanel } from "./BackupsPanel";
 import { Alert } from "./Alert";
@@ -29,7 +35,7 @@ export function EditModal({
   const [command, setCommand] = useState("");
   const [portsText, setPortsText] = useState("");
   const [envText, setEnvText] = useState("");
-  const [volsText, setVolsText] = useState("");
+  const [folders, setFolders] = useState<FolderRow[]>([]);
   const [memory, setMemory] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
 
@@ -51,7 +57,7 @@ export function EditModal({
         setCommand(c.command);
         setPortsText(pairsToText(c.ports, ":"));
         setEnvText(pairsToText(c.environment, "="));
-        setVolsText(pairsToText(c.volumes, "="));
+        setFolders(volumesToRows(c.volumes));
         setMemory(c.memory_limit);
         setPicked(c.shares);
         setController(c.controller);
@@ -72,7 +78,7 @@ export function EditModal({
         command: command.trim(),
         ports: parsePairs(portsText, ":"),
         environment: parsePairs(envText, "="),
-        volumes: parseVolumes(volsText),
+        volumes: rowsToVolumes(folders),
         memory_limit: memory.trim(),
         shares: picked,
         pull,
@@ -138,17 +144,6 @@ export function EditModal({
                   onChange={(e) => setEnvText(e.target.value)}
                 />
               </Field>
-              <Field
-                label="Volumes"
-                hint="one /container/path=/host/path per line · append :ro to a host path for read-only"
-              >
-                <textarea
-                  className="textarea"
-                  rows={3}
-                  value={volsText}
-                  onChange={(e) => setVolsText(e.target.value)}
-                />
-              </Field>
               <Field label="Memory limit (optional)" hint="e.g. 512m — blank for none">
                 <input
                   className="input"
@@ -158,6 +153,8 @@ export function EditModal({
                 />
               </Field>
             </FormSection>
+
+            <FolderEditor rows={folders} onChange={setFolders} />
 
             <SharePicker shares={shares} picked={picked} onChange={setPicked} />
 
