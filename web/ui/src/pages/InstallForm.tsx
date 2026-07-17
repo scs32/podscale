@@ -4,6 +4,12 @@ import type { CatalogItem, InstallResult, Share } from "../types";
 import { api } from "../api";
 import { Field, FormSection } from "../components/Form";
 import { Alert } from "../components/Alert";
+import {
+  FolderEditor,
+  rowsToVolumes,
+  volumesToRows,
+  type FolderRow,
+} from "../components/FolderEditor";
 import { SharePicker } from "../components/SharePicker";
 import { InstallResultView } from "../components/InstallResultView";
 import { AuthKeyField } from "../components/AuthKeyField";
@@ -15,7 +21,7 @@ export function InstallForm() {
   const [loadErr, setLoadErr] = useState("");
 
   const [env, setEnv] = useState<Record<string, string>>({});
-  const [vols, setVols] = useState<Record<string, string>>({});
+  const [folders, setFolders] = useState<FolderRow[]>([]);
   const [picked, setPicked] = useState<string[]>([]);
   const [authkey, setAuthkey] = useState("");
   const [tsapiOk, setTsapiOk] = useState<boolean | null>(null);
@@ -36,7 +42,7 @@ export function InstallForm() {
           for (const cpath of Object.values(found.volumes)) {
             v[cpath] = `${info.pods_dir}/${name}/${cpath.replace(/^\//, "")}`;
           }
-          setVols(v);
+          setFolders(volumesToRows(v));
         }
       })
       .catch((e) => setLoadErr(String(e)));
@@ -50,7 +56,7 @@ export function InstallForm() {
         await api.install({
           service: name,
           environment: env,
-          volumes: vols,
+          volumes: rowsToVolumes(folders),
           shares: picked,
           authkey,
         }),
@@ -115,19 +121,7 @@ export function InstallForm() {
           </FormSection>
         )}
 
-        {Object.keys(vols).length > 0 && (
-          <FormSection title="Volumes">
-            {Object.entries(vols).map(([cpath, host]) => (
-              <Field key={cpath} label={`host path for ${cpath}`}>
-                <input
-                  className="input"
-                  value={host}
-                  onChange={(e) => setVols({ ...vols, [cpath]: e.target.value })}
-                />
-              </Field>
-            ))}
-          </FormSection>
-        )}
+        <FolderEditor rows={folders} onChange={setFolders} />
 
         <SharePicker shares={shares} picked={picked} onChange={setPicked} />
 

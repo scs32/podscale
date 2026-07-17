@@ -3,10 +3,15 @@ import { Link } from "react-router-dom";
 import type { InstallResult, Share } from "../types";
 import { api } from "../api";
 import { Field, FormSection } from "../components/Form";
+import {
+  FolderEditor,
+  rowsToVolumes,
+  type FolderRow,
+} from "../components/FolderEditor";
 import { SharePicker } from "../components/SharePicker";
 import { InstallResultView } from "../components/InstallResultView";
 import { AuthKeyField } from "../components/AuthKeyField";
-import { parsePairs, parseVolumes } from "../lib/pairs";
+import { parsePairs } from "../lib/pairs";
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -17,7 +22,7 @@ export function CustomPod() {
   const [command, setCommand] = useState("");
   const [portsText, setPortsText] = useState("");
   const [envText, setEnvText] = useState("");
-  const [volsText, setVolsText] = useState("");
+  const [folders, setFolders] = useState<FolderRow[]>([]);
   const [picked, setPicked] = useState<string[]>([]);
   const [authkey, setAuthkey] = useState("");
   const [tsapiOk, setTsapiOk] = useState<boolean | null>(null);
@@ -46,7 +51,7 @@ export function CustomPod() {
           command: command.trim(),
           ports: parsePairs(portsText, ":"),
           environment: parsePairs(envText, "="),
-          volumes: parseVolumes(volsText),
+          volumes: rowsToVolumes(folders),
           shares: picked,
           authkey,
         }),
@@ -112,19 +117,9 @@ export function CustomPod() {
               onChange={(e) => setEnvText(e.target.value)}
             />
           </Field>
-          <Field
-            label="Volumes"
-            hint="one /container/path=/host/path per line · append :ro to a host path for read-only"
-          >
-            <textarea
-              className="textarea"
-              rows={3}
-              value={volsText}
-              onChange={(e) => setVolsText(e.target.value)}
-              placeholder="/config=/root/Pods/jellyfin/config"
-            />
-          </Field>
         </FormSection>
+
+        <FolderEditor rows={folders} onChange={setFolders} />
 
         <FormSection title="Networking">
           <p className="field__hint" style={{ margin: 0 }}>
