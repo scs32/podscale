@@ -2888,7 +2888,8 @@ def op_attach(pod, sname):
 def api_get(path):
     if path == "/api/info":
         latest = load_release().get("latest", "")
-        return 200, {"pods_dir": PODS_DIR,
+        return 200, {"api_version": 1,
+                     "pods_dir": PODS_DIR,
                      "controller_pods": sorted(CONTROLLER_PODS),
                      "version": VERSION,
                      "upgrade_available": bool(latest)
