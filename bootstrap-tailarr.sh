@@ -45,13 +45,18 @@ if [[ "$host_mtu" -lt 1500 ]] && ! grep -qs "network_cmd_options" /etc/container
 fi
 
 # --- podman API socket (the controller drives the host through it) ---
-if [[ ! -S "$SOCKET" ]]; then
+# /run may not be tmpfs in these guests, so a stale socket FILE can survive
+# a VM restart while the service behind it is gone — probe the API, not the
+# path (same rule as start-pods.sh below).
+if ! podman --url "unix://$SOCKET" info >/dev/null 2>&1; then
     echo "Starting podman API socket..."
+    rm -f "$SOCKET"
     mkdir -p "$(dirname "$SOCKET")"
     nohup podman system service --time=0 "unix://$SOCKET" \
         >/var/log/podman-api.log 2>&1 &
     sleep 2
-    [[ -S "$SOCKET" ]] || { echo "Error: could not start podman API socket" >&2; exit 1; }
+    podman --url "unix://$SOCKET" info >/dev/null 2>&1 \
+        || { echo "Error: could not start podman API socket" >&2; exit 1; }
 fi
 
 # --- boot recovery script: this host may keep /run on disk (not tmpfs),
@@ -173,6 +178,7 @@ podman run -d \
   -v "$PODS_DIR/tailarr/tailscale-serve.json:/config/serve.json" \
   -e TS_SERVE_CONFIG=/config/serve.json \
   -e TS_AUTHKEY="$(cat "$KEY_FILE" 2>/dev/null || true)" \
+  -e TS_AUTH_ONCE=true \
   -e TS_STATE_DIR=/var/lib/tailscale \
   -e TS_USERSPACE=false \
   -e TS_DEBUG_MTU=1280 \
