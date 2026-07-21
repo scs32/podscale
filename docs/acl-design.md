@@ -362,3 +362,34 @@ Design points, in the spirit of the rest of this doc:
 - The controller verifies from its own sidecar (`tailscale status
   --json` → peer-relay / direct / derp) in the maintenance loop; the
   Settings banner clears on peer-relay *or* direct.
+
+## 11. Addendum (2026-07-21): relay generalization — registry + per-pod (v0.15.0)
+
+v0.13.0's grant was apple/container-only and tailnet-wide. v0.15.0 makes
+peer relay a first-class Networking feature on every platform:
+
+- **The registry** (`Pods/.relay.json` → `relays`): devices Tailarr has
+  registered as relays, keyed by tailnet IP. Tailscale has no "list
+  relay-capable nodes" API and no remote enablement
+  (tailscale/tailscale#17791) — capability is only *proven* when
+  `relay_verify()` sees traffic through a device's IP in `PeerRelay`.
+  Entries start `pending` and graduate to `active` on proof; relays seen
+  carrying traffic that were never registered are auto-discovered in.
+- **Grant shapes** (all inside the same fenced grants section, same
+  prefix invariant — IP dsts carry no tags at all):
+  - *Global, no selection* → the v0.13.0 autogroup-ladder grant,
+    verbatim. Upgraded installs change nothing.
+  - *Global, relay selected* → dst becomes `"<ip>/32"`; the
+    `tag:tailarr-relay` owner line is dropped (nothing references it).
+  - *Per-pod* → one cap grant per selection: src
+    `["tag:tailarr-svc-<name>", "tag:tailarr-user", "autogroup:member"]`
+    (`"server"` selects the controller: `tag:tailarr-ctrl`), dst that
+    pod's chosen relay IP. Pods without a selection get no grant.
+- **The downgrade ladder narrows**: the admin→member rung only applies
+  to the autogroup dst; a rejected specific-IP grant goes straight to
+  the disable rung (still confirmed by the relay-free probe splice).
+- **Host one-click**: on linux hosts, add-relay `try_host` runs
+  `tailscale set --relay-server-port=<port>` via the host-exec helper —
+  the one case where Tailarr can flip capability itself. apple/container
+  guests can't nsenter (install-mac.sh already covers the Mac); every
+  other device gets the command to run and waits for proof of traffic.

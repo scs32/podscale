@@ -263,18 +263,43 @@ export interface Info {
   relay: RelayStatus;
 }
 
-// GET /api/relay — peer-relay state for apple/container installs. The
-// grant is auto-emitted only when the pre-flight says the tailnet looks
-// dedicated; `reasons` explains a negative verdict in customer language.
+// A registry entry: a device Tailarr knows can (or should soon) act as a
+// peer relay. `pending` = registered but traffic never seen through it;
+// `active` = relay_verify() watched traffic flow through its IP, or the
+// enable command was run on the host by Tailarr itself.
+export interface RelayEntry {
+  id: string; // == ip
+  name: string;
+  ip: string;
+  status: "pending" | "active";
+  added_at: number;
+  verified_at?: number;
+  discovered?: boolean; // seen carrying traffic, never explicitly added
+  command_run?: boolean; // Tailarr ran the enable command via host-exec
+  host_exec_error?: string;
+}
+
+// GET /api/relay — peer-relay state. Offered on every platform since
+// v0.15.0 (`recommended` marks the apple/container near-certain-DERP
+// case); the grant is auto-emitted only when the pre-flight says the
+// tailnet looks dedicated; `reasons` explains a negative verdict in
+// customer language.
 export interface RelayStatus {
   platform: string;
-  applicable: boolean; // host is an apple/container guest
+  applicable: boolean; // always true since v0.15.0 (kept for app compat)
+  recommended: boolean;
   enabled: boolean | null; // null = auto (follow the pre-flight)
   eligible: boolean;
   reasons: string[];
   counts: Record<string, number>;
   grant_active: boolean;
   dst_fallback: boolean;
+  mode: "global" | "per-pod";
+  relays: RelayEntry[];
+  global_relay: string; // relay id, "" = automatic (any admin device)
+  pod_relays: Record<string, string>; // svc (or "server") -> relay id
+  port: number;
+  command: string; // the local enable command for pending relays
   verified: {
     state: "unknown" | "derp" | "direct" | "peer-relay";
     at: number;
@@ -282,11 +307,40 @@ export interface RelayStatus {
   };
 }
 
+// POST /api/relay body — do + action-specific fields.
+export interface RelayAction {
+  do:
+    | "enable"
+    | "disable"
+    | "recheck"
+    | "mode"
+    | "add-relay"
+    | "remove-relay"
+    | "set-global"
+    | "set-pod";
+  mode?: "global" | "per-pod";
+  ip?: string;
+  name?: string;
+  try_host?: boolean;
+  id?: string;
+  pod?: string;
+}
+
 export interface RelayActionResult {
   ok: boolean;
   error?: string | null;
   relay: RelayStatus;
+  command?: string;
   sync?: { ok: boolean; changed: boolean; error: string | null };
+}
+
+// GET /api/relay/devices — candidates for the add-relay picker.
+export interface RelayDevice {
+  hostname: string;
+  name: string;
+  ip: string;
+  os: string;
+  user: string;
 }
 
 // GET /api/controller/upgrade — Settings upgrade card state.
