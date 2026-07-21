@@ -2,12 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FleetResult, UpgradeStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "./Alert";
+import { UpgradeOverlay, type UpgradeStage } from "./UpgradeOverlay";
 
 // How long to wait for the new controller before advising a manual look.
 // The helper sleeps ~3s, swaps the container, and health-checks for up to
 // 60s before rolling back — 150s covers the full cycle plus image start.
 const UPGRADE_WAIT_MS = 150_000;
 const POLL_MS = 3_000;
+
+// Set before the post-upgrade reload so the fresh page (new SPA bundle)
+// knows to show the "Finish upgrade" step. Session-scoped on purpose.
+const UPGRADED_FROM_KEY = "tailarr.upgraded_from";
 
 type Phase =
   | "idle"
@@ -21,21 +26,48 @@ type Phase =
 export function UpgradeCard() {
   const [status, setStatus] = useState<UpgradeStatus | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
+  const [stage, setStage] = useState<UpgradeStage>("pull");
   const [error, setError] = useState("");
   const [newVersion, setNewVersion] = useState("");
   const [rerenderBusy, setRerenderBusy] = useState(false);
   const [rerender, setRerender] = useState<FleetResult | null>(null);
   const timers = useRef<number[]>([]);
+  const polling = useRef(false);
 
   const refresh = useCallback(() => {
     api
       .upgradeStatus()
       .then((s) => {
         setStatus(s);
-        // A reloaded page mid-upgrade should resume waiting, not sit idle.
-        if (s.busy) setPhase("upgrading");
+        // A reloaded page mid-upgrade should resume waiting, not sit idle
+        // — including restarting the poll (the old code set the phase but
+        // never resumed polling, leaving the page stuck "upgrading").
+        if (s.busy) {
+          setPhase("upgrading");
+          setStage("wait");
+          waitForNewController(s.current);
+        }
       })
       .catch(() => setStatus(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // The page that loads AFTER a successful swap picks up the handoff
+    // and shows the "Finish upgrade" (fleet rerender) step.
+    const from = sessionStorage.getItem(UPGRADED_FROM_KEY);
+    if (from) {
+      sessionStorage.removeItem(UPGRADED_FROM_KEY);
+      api
+        .info()
+        .then((i) => {
+          if (i.version !== from) {
+            setNewVersion(i.version);
+            setPhase("done");
+          }
+        })
+        .catch(() => {});
+    }
   }, []);
 
   useEffect(refresh, [refresh]);
@@ -54,28 +86,37 @@ export function UpgradeCard() {
   }
 
   function waitForNewController(from: string) {
+    if (polling.current) return; // refresh() + upgrade() must not double-poll
+    polling.current = true;
     const deadline = Date.now() + UPGRADE_WAIT_MS;
     const poll = async () => {
       try {
         const info = await api.info();
         if (info.version !== from) {
-          setNewVersion(info.version);
-          setPhase("done");
+          // Success — reload so the page runs the NEW version's SPA bundle
+          // (this code is still the old one). The fresh page reads the
+          // handoff key and offers the "Finish upgrade" step.
+          sessionStorage.setItem(UPGRADED_FROM_KEY, from);
+          window.location.reload();
           return;
         }
         // Same version answering again: either the swap hasn't landed yet,
         // or the helper rolled back — its result file knows which.
+        setStage("wait");
         const s = await api.upgradeStatus().catch(() => null);
         if (s && !s.busy && s.last && s.last.rolled_back) {
           setStatus(s);
           setPhase("rolledback");
+          polling.current = false;
           return;
         }
       } catch {
         // Connection refused while the controller swaps — keep waiting.
+        setStage("swap");
       }
       if (Date.now() > deadline) {
         setPhase("timeout");
+        polling.current = false;
         return;
       }
       timers.current.push(window.setTimeout(poll, POLL_MS));
@@ -86,6 +127,7 @@ export function UpgradeCard() {
   async function upgrade() {
     if (!status) return;
     setPhase("upgrading");
+    setStage("pull"); // the POST pulls the image before detaching the helper
     setError("");
     const r = await api.upgrade();
     if (!r.ok) {
@@ -94,6 +136,7 @@ export function UpgradeCard() {
       refresh();
       return;
     }
+    setStage("swap");
     waitForNewController(status.current);
   }
 
@@ -132,11 +175,11 @@ export function UpgradeCard() {
       {error && <Alert kind="err">{error}</Alert>}
 
       {phase === "upgrading" && (
-        <Alert kind="info">
-          Upgrading… the controller restarts in a few seconds and this page
-          reconnects automatically. The Tailscale sidecar (and this pod’s
-          HTTPS identity) is untouched.
-        </Alert>
+        <UpgradeOverlay
+          stage={stage}
+          from={status.current}
+          to={status.latest}
+        />
       )}
 
       {phase === "done" && (
@@ -171,19 +214,35 @@ export function UpgradeCard() {
       )}
 
       {phase === "rolledback" && (
-        <Alert kind="err">
-          The new controller failed its health check — the upgrade was rolled
-          back and v{status.current} is still running. See{" "}
-          <code>Pods/.upgrade/upgrade.log</code>.
-        </Alert>
+        <UpgradeOverlay
+          stage="wait"
+          from={status.current}
+          to={status.latest}
+          failure={
+            <>
+              The new controller failed its health check — the upgrade was
+              rolled back and v{status.current} is still running. See{" "}
+              <code>Pods/.upgrade/upgrade.log</code>.
+            </>
+          }
+          onDismiss={() => setPhase("idle")}
+        />
       )}
 
       {phase === "timeout" && (
-        <Alert kind="err">
-          Still no answer from the controller after the swap. If it stays
-          down, check <code>Pods/.upgrade/upgrade.log</code> on the host; the
-          helper rolls back automatically on a failed health check.
-        </Alert>
+        <UpgradeOverlay
+          stage="wait"
+          from={status.current}
+          to={status.latest}
+          failure={
+            <>
+              Still no answer from the controller after the swap. If it stays
+              down, check <code>Pods/.upgrade/upgrade.log</code> on the host;
+              the helper rolls back automatically on a failed health check.
+            </>
+          }
+          onDismiss={() => setPhase("idle")}
+        />
       )}
 
       {(phase === "idle" || phase === "checking") && (

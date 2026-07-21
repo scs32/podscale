@@ -534,3 +534,21 @@ a:hover { text-decoration: underline; }
 .meter__fill--warn { background: var(--warn); }
 .meter__fill--danger { background: var(--danger); }
 .stat-updated { font-size: var(--fs-xs); color: var(--faint); font-family: var(--font-mono); }
+/* =========================================================
+   Upgrade overlay — blocking staged status during a controller swap
+   ========================================================= */
+.upgrade-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(2,6,15,.86); backdrop-filter: blur(6px); display: grid; place-items: center; padding: var(--sp-4); }
+.upgrade-overlay__box { text-align: center; max-width: 420px; width: 100%; }
+.upgrade-overlay__mark { width: 72px; height: 72px; color: var(--accent); }
+.upgrade-overlay--live .upgrade-overlay__mark { animation: upgrade-pulse 1.6s ease-in-out infinite; }
+@keyframes upgrade-pulse { 0%, 100% { opacity: .5; transform: scale(.95); } 50% { opacity: 1; transform: scale(1); } }
+.upgrade-overlay__title { font-family: var(--font-display, inherit); font-size: var(--fs-lg); color: var(--text); margin: var(--sp-4) 0 0; }
+.upgrade-overlay__sub { font-size: var(--fs-sm); color: var(--muted); margin: var(--sp-2) 0 0; }
+.upgrade-steps { list-style: none; margin: var(--sp-6) auto 0; padding: 0; display: inline-flex; flex-direction: column; gap: var(--sp-3); text-align: left; }
+.upgrade-step { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-sm); color: var(--faint); }
+.upgrade-step--active { color: var(--text); }
+.upgrade-step--done { color: var(--muted); }
+.upgrade-step__dot { width: 18px; height: 18px; flex: none; display: grid; place-items: center; color: inherit; }
+.upgrade-step--active .upgrade-step__dot { color: var(--accent); }
+.upgrade-step--done .upgrade-step__dot { color: var(--ok); }
+.upgrade-step__idle { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .5; }
