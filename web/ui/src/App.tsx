@@ -1,8 +1,7 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Sidebar } from "./components/Shell";
 import { Dashboard } from "./pages/Dashboard";
 import { Catalog } from "./pages/Catalog";
-import { CustomPod } from "./pages/CustomPod";
 import { Shares } from "./pages/Shares";
 import { Network } from "./pages/Network";
 import { Monitor } from "./pages/Monitor";
@@ -20,7 +19,8 @@ function Layout() {
           <Route path="/catalog" element={<Catalog />} />
           {/* deep-link: opens the catalog with the install popup for :name */}
           <Route path="/install/:name" element={<Catalog />} />
-          <Route path="/custom" element={<CustomPod />} />
+          {/* custom pods moved into the catalog (v0.16.0) */}
+          <Route path="/custom" element={<Navigate to="/catalog" replace />} />
           <Route path="/shares" element={<Shares />} />
           <Route path="/network" element={<Network />} />
           <Route path="/users" element={<Users />} />

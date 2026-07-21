@@ -1220,6 +1220,42 @@ finally:
     app.ts_api = _real_ts_api6
     app._host_exec = _real_host_exec6
 
+# --- custom pods: the user-authored "custom" catalog source ---------------
+code, data = post("/api/custompods", {"do": "save", "name": "Bad Name",
+                  "image": "x"})
+check(code == 400, "custom pod names are validated")
+code, data = post("/api/custompods", {"do": "save", "name": "cpod",
+                  "image": ""})
+check(code == 400 and "image" in data["error"], "an image is required")
+_builtin_name = sorted(app.load_services())[0]
+code, data = post("/api/custompods", {"do": "save", "name": _builtin_name,
+                  "image": "docker.io/x"})
+check(code == 400 and "built-in" in data["error"],
+      "built-in catalog names cannot be shadowed")
+
+code, data = post("/api/custompods", {"do": "save", "name": "cpod",
+                  "image": "ghcr.io/x/y:latest",
+                  "ports": {"9999": "9999"},
+                  "environment": {"TZ": "UTC"}})
+check(code == 200 and data["ok"], "a valid custom pod saves")
+code, data = get("/api/catalog")
+entry = [c for c in data["catalog"] if c["name"] == "cpod"]
+check(len(entry) == 1 and entry[0]["source"] == "custom"
+      and entry[0]["image"] == "ghcr.io/x/y:latest",
+      "the custom pod appears in the catalog under the custom source")
+spec = app.resolve_service("cpod")
+check(spec is not None and spec["_source"] == "custom"
+      and spec["network_mode"] == "bridge",
+      "install-by-name resolves the custom spec with sane defaults")
+
+code, data = post("/api/custompods", {"do": "delete", "name": "nope"})
+check(code == 400, "deleting an unknown custom pod fails")
+code, data = post("/api/custompods", {"do": "delete", "name": "cpod"})
+check(code == 200 and data["ok"], "custom pods delete")
+code, data = get("/api/catalog")
+check(not any(c["name"] == "cpod" for c in data["catalog"]),
+      "a deleted custom pod leaves the catalog")
+
 # --- relay live-fixes (v0.15.3): cmdline detect, ready state, preflight ---
 _real_cmdline = app.CMDLINE_PATH
 _real_podman7 = app.podman
