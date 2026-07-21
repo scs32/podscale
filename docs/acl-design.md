@@ -388,8 +388,14 @@ peer relay a first-class Networking feature on every platform:
 - **The downgrade ladder narrows**: the admin→member rung only applies
   to the autogroup dst; a rejected specific-IP grant goes straight to
   the disable rung (still confirmed by the relay-free probe splice).
-- **Host one-click**: on linux hosts, add-relay `try_host` runs
-  `tailscale set --relay-server-port=<port>` via the host-exec helper —
-  the one case where Tailarr can flip capability itself. apple/container
-  guests can't nsenter (install-mac.sh already covers the Mac); every
-  other device gets the command to run and waits for proof of traffic.
+- **No host special case (v0.15.2)**: v0.15.0/0.15.1 briefly offered a
+  one-click "enable the machine hosting Tailarr" via host-exec. Removed:
+  the machine host-exec reaches is the INNER host (the podman host —
+  the guest VM on apple/container, the VM on nested linux), which shares
+  the sidecars' NAT position — nominating it as a relay is useless
+  exactly when a relay is needed (live-caught 2026-07-21). Capability is
+  therefore always device-local: every added relay gets the
+  `tailscale set --relay-server-port=<port>` command to run and stays
+  pending until `relay_verify()` sees traffic through it. The machine
+  worth nominating is the OUTERMOST host (the Mac — install-mac.sh) or
+  any well-connected tailnet device.

@@ -39,7 +39,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.15.1"
+VERSION = "0.15.2"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -2359,33 +2359,16 @@ def _relay_result(ok, sync, error=None, **extra):
 
 def _op_relay_add(data):
     """Register a relay device. The grant is authored by the next policy
-    sync (if selected); CAPABILITY can only be enabled on the device itself
-    — try_host attempts it via host-exec (the machine hosting this install
-    on linux hosts; apple/container guests can't nsenter, install-mac.sh
-    covers the Mac), otherwise the command is returned for the user to run.
-    Entries start pending and graduate to active when relay_verify() sees
-    traffic through them.
-
-    {host: true} means "the machine hosting Tailarr" with no IP given —
-    the controller resolves the address itself via host-exec (`tailscale
-    ip -4` on the host), so the user never needs to know it."""
+    sync (if selected). CAPABILITY is always enabled on the device itself —
+    `tailscale set --relay-server-port` has no remote/API form
+    (tailscale/tailscale#17791) — so the command is returned for the user
+    to run there; entries start pending and graduate to active only when
+    relay_verify() sees traffic through them. (v0.15.2 removed the
+    host-exec special case that ran the command on the podman host: the
+    inner host shares the sidecars' NAT position on nested installs, so
+    it was the wrong machine to nominate.)"""
     ip = (data.get("ip") or "").strip()
     name = (data.get("name") or "").strip() or ip
-    if data.get("host") and not ip:
-        rc, out = _host_exec("tailarr-relay-ip", "tailscale ip -4")
-        got = (out or "").strip().splitlines()
-        if rc == 0 and got and re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}",
-                                            got[0].strip()):
-            ip = got[0].strip()
-            name = name or "tailarr-host"
-            data = dict(data, try_host=True)  # we're on the host — enable it
-        else:
-            return {"ok": False, "relay": status_relay(),
-                    "error": "Could not find the host's tailnet address — "
-                             "is Tailscale installed on the machine hosting "
-                             "Tailarr? On a Mac (apple/container), pick the "
-                             "Mac from the device list instead; "
-                             "install-mac.sh already enabled it."}
     if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip):
         return {"ok": False, "relay": status_relay(),
                 "error": "Pick a device from the list or enter its tailnet "
@@ -2396,20 +2379,12 @@ def _op_relay_add(data):
     entry = relays.setdefault(ip, {"ip": ip, "added_at": int(time.time())})
     entry["name"] = name
     entry.setdefault("status", "pending")
-    command = _relay_command(port)
-    if data.get("try_host"):
-        rc, out = _host_exec("tailarr-relay-set", command)
-        if rc == 0:
-            # The command ran on the host itself — capability is on.
-            entry["status"] = "active"
-            entry["command_run"] = True
-        else:
-            entry["host_exec_error"] = (out or "").strip()[:200]
     # First relay in global mode becomes THE relay — the obvious intent.
     if (r.get("mode") or "global") == "global" and not r.get("global_relay"):
         r["global_relay"] = ip
     save_relay(r)
-    return _relay_result(True, ts_policy_sync(), command=command)
+    return _relay_result(True, ts_policy_sync(),
+                         command=_relay_command(port))
 
 
 def _op_relay_remove(data):

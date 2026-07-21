@@ -265,8 +265,7 @@ export interface Info {
 
 // A registry entry: a device Tailarr knows can (or should soon) act as a
 // peer relay. `pending` = registered but traffic never seen through it;
-// `active` = relay_verify() watched traffic flow through its IP, or the
-// enable command was run on the host by Tailarr itself.
+// `active` = relay_verify() watched traffic flow through its IP.
 export interface RelayEntry {
   id: string; // == ip
   name: string;
@@ -275,8 +274,6 @@ export interface RelayEntry {
   added_at: number;
   verified_at?: number;
   discovered?: boolean; // seen carrying traffic, never explicitly added
-  command_run?: boolean; // Tailarr ran the enable command via host-exec
-  host_exec_error?: string;
 }
 
 // GET /api/relay — peer-relay state. Offered on every platform since
@@ -321,8 +318,6 @@ export interface RelayAction {
   mode?: "global" | "per-pod";
   ip?: string;
   name?: string;
-  host?: boolean; // "the machine hosting Tailarr" — controller finds the IP
-  try_host?: boolean;
   id?: string;
   pod?: string;
 }
