@@ -265,12 +265,14 @@ export interface Info {
 
 // A registry entry: a device Tailarr knows can (or should soon) act as a
 // peer relay. `pending` = registered but traffic never seen through it;
-// `active` = relay_verify() watched traffic flow through its IP.
+// pending = device isn't advertising relay capability (the enable command
+// hasn't been run there); ready = advertising, but no relayed traffic seen
+// yet; active = relay_verify() watched traffic flow through its IP.
 export interface RelayEntry {
   id: string; // == ip
   name: string;
   ip: string;
-  status: "pending" | "active";
+  status: "pending" | "ready" | "active";
   added_at: number;
   verified_at?: number;
   discovered?: boolean; // seen carrying traffic, never explicitly added

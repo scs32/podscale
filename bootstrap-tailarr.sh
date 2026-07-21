@@ -20,7 +20,7 @@ PODS_DIR="${PODS_DIR:-$HOME/Pods}"
 # fresh install right after a release can't catch a stale :latest manifest
 # from GHCR. CI enforces that this matches web/app.py's VERSION; bump both
 # when cutting a release. HOMEPOD_IMAGE still overrides everything.
-TAILARR_VERSION="0.15.2"
+TAILARR_VERSION="0.15.3"
 IMAGE="${HOMEPOD_IMAGE:-ghcr.io/scs32/tailarr:v${TAILARR_VERSION}}"
 TS_IMAGE="docker.io/tailscale/tailscale:stable"
 SOCKET="/run/podman/podman.sock"
@@ -41,20 +41,21 @@ if [[ "$host_mtu" -lt 1500 ]] && ! grep -qs "network_cmd_options" /etc/container
 fi
 
 # --- host platform fact ----------------------------------------------------
-# apple/container guests run vminitd as PID 1 (no systemd) — that one fact
-# drives platform-specific behavior in the controller (peer-relay offer,
-# skipping the systemd mounts drop-in helper). Recorded once per bootstrap;
-# the controller backfills this file on upgraded installs that predate it.
-# Do NOT use /sys/class/dmi here: arm64 guests may have no SMBIOS at all.
-pid1=$(cat /proc/1/comm 2>/dev/null || echo unknown)
+# apple/container VMs boot with init=/sbin/vminitd on the kernel command
+# line — and /proc/cmdline is VM-global, NOT namespaced, so it's readable
+# from inside the container this bootstrap runs in. That's the reliable
+# signal: /proc/1/comm is useless here (containers get their own PID
+# namespace, so PID 1 is the container's own command — live-caught
+# 2026-07-21), and /sys/class/dmi may not exist on arm64 at all. The
+# platform fact drives the peer-relay offer and skips the systemd mounts
+# drop-in helper; the controller re-checks (and corrects) it at startup.
 platform=linux
-[[ "$pid1" == "vminitd" ]] && platform=apple-container
-dt=$(tr -d '\0' < /proc/device-tree/compatible 2>/dev/null || true)
+grep -q 'init=/sbin/vminitd' /proc/cmdline 2>/dev/null && platform=apple-container
 mkdir -p "$PODS_DIR"
-(umask 077; printf '{\n  "platform": "%s",\n  "pid1": "%s",\n  "dt_compatible": "%s",\n  "detected_at": %s,\n  "detected_by": "bootstrap"\n}\n' \
-    "$platform" "$pid1" "$dt" "$(date +%s)" > "$PODS_DIR/.host.json")
+(umask 077; printf '{\n  "platform": "%s",\n  "detected_at": %s,\n  "detected_by": "bootstrap-cmdline"\n}\n' \
+    "$platform" "$(date +%s)" > "$PODS_DIR/.host.json")
 chmod 600 "$PODS_DIR/.host.json"
-echo "Host platform: $platform (pid1=$pid1)"
+echo "Host platform: $platform"
 
 # --- credential ------------------------------------------------------------
 # A Tailscale OAuth client is THE install credential (Tailarr's model is a

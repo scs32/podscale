@@ -1220,6 +1220,97 @@ finally:
     app.ts_api = _real_ts_api6
     app._host_exec = _real_host_exec6
 
+# --- relay live-fixes (v0.15.3): cmdline detect, ready state, preflight ---
+_real_cmdline = app.CMDLINE_PATH
+_real_podman7 = app.podman
+_real_ctrl7 = app._controller_name
+_real_preflight7 = app.ts_relay_preflight
+try:
+    # Platform detection from the kernel cmdline — including CORRECTING a
+    # wrong verdict left by the v0.13.0 pid1 check (the live 07-21 bug).
+    cmdfile = os.path.join(pods, "fake-cmdline")
+    with open(cmdfile, "w") as f:
+        f.write("console=hvc0 panic=0 init=/sbin/vminitd ro root=/dev/vda\n")
+    app.CMDLINE_PATH = cmdfile
+    with open(os.path.join(pods, ".host.json"), "w") as f:
+        json.dump({"platform": "linux", "pid1": "sleep"}, f)
+    app._host_platform_cache = None
+    app._detect_host_platform()
+    check(app.host_platform() == "apple-container",
+          "a wrong 'linux' verdict is corrected from the kernel cmdline")
+    with open(os.path.join(pods, ".host.json")) as f:
+        hj = json.load(f)
+    check(hj["corrected_from"] == "linux"
+          and hj["detected_by"] == "controller-cmdline",
+          ".host.json records what was corrected and how")
+    with open(cmdfile, "w") as f:
+        f.write("BOOT_IMAGE=/vmlinuz root=/dev/sda1 ro quiet\n")
+    app._detect_host_platform()
+    app._host_platform_cache = None
+    check(app.host_platform() == "linux",
+          "a linux cmdline detects (and corrects back to) linux")
+    # ...and restore apple-container for the remaining suites.
+    with open(cmdfile, "w") as f:
+        f.write("init=/sbin/vminitd ro\n")
+    app._detect_host_platform()
+    app._host_platform_cache = None
+
+    # First-boot pre-flight: recorded once, never overwritten.
+    app.ts_relay_preflight = lambda: {"eligible": True, "reasons": [],
+                                      "counts": {}, "fences_present": True,
+                                      "checked_at": 1}
+    r = app.load_relay()
+    r.pop("preflight", None)
+    app.save_relay(r)
+    app._startup_relay_preflight()
+    check(app.load_relay()["preflight"]["checked_at"] == 1,
+          "first boot records a pre-flight verdict")
+    app.ts_relay_preflight = lambda: {"eligible": False, "reasons": ["x"],
+                                      "counts": {}, "fences_present": True,
+                                      "checked_at": 2}
+    app._startup_relay_preflight()
+    check(app.load_relay()["preflight"]["checked_at"] == 1,
+          "an existing verdict is never overwritten at startup")
+
+    # Ready state: advertising devices stop nagging about the command.
+    def _fake_relay_podman(status_doc, advertising):
+        def fake(*args, timeout=60):
+            if "peer-relay-servers" in args:
+                return types.SimpleNamespace(
+                    returncode=0, stdout=json.dumps(advertising), stderr="")
+            if "status" in args:
+                return types.SimpleNamespace(
+                    returncode=0, stdout=json.dumps(status_doc), stderr="")
+            if "version" in args:
+                return types.SimpleNamespace(returncode=0,
+                                             stdout="1.98.9\n", stderr="")
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+        return fake
+
+    app._controller_name = lambda: "tailarr"
+    r = app.load_relay()
+    r["relays"] = {"100.99.0.5": {"name": "mac", "ip": "100.99.0.5",
+                                  "added_at": 1, "status": "pending"},
+                   "100.99.0.6": {"name": "old", "ip": "100.99.0.6",
+                                  "added_at": 1, "status": "active"}}
+    app.save_relay(r)
+    app.podman = _fake_relay_podman({"Peer": {}}, ["100.99.0.5"])
+    app.relay_verify()
+    saved = app.load_relay()["relays"]
+    check(saved["100.99.0.5"]["status"] == "ready",
+          "an advertising relay graduates pending -> ready (no command nag)")
+    check(saved["100.99.0.6"]["status"] == "active",
+          "an active relay is never demoted by the advertising probe")
+    app.podman = _fake_relay_podman({"Peer": {}}, [])
+    app.relay_verify()
+    check(app.load_relay()["relays"]["100.99.0.5"]["status"] == "pending",
+          "a relay that stops advertising drops back to pending")
+finally:
+    app.CMDLINE_PATH = _real_cmdline
+    app.podman = _real_podman7
+    app._controller_name = _real_ctrl7
+    app.ts_relay_preflight = _real_preflight7
+
 # --- stats: /api/stats per-pod live resources + shared collector ---------
 _real_stats_podman = app.podman
 _real_stats_deployed = app.deployed_services
