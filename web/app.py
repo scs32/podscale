@@ -28,6 +28,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import subprocess
@@ -39,7 +40,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.16.0"
+VERSION = "0.17.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -3632,6 +3633,85 @@ def _host_exec(helper, script, timeout=60):
     return r.returncode, r.stdout + r.stderr
 
 
+# =========================================================================
+# Host folder browser (/api/fs) — backs the FolderEditor "Browse" popover
+# =========================================================================
+# The controller container only mounts PODS_DIR + the podman socket, so it
+# cannot see arbitrary podman-host paths (the ones pods actually bind-mount).
+# Browse via a one-shot container with the host root at /host-root instead of
+# _host_exec's nsenter, which is EPERM on apple/container.
+FS_ROOT = "/host-root"
+
+
+def _fs_exec(script, rw=False, timeout=30):
+    """Run `script` with the podman host's / at /host-root (read-only unless
+    rw). Returns (CompletedProcess, error) — error set means podman/the
+    controller image is unreachable (dev/CI runs)."""
+    name = _controller_name()
+    if not name:
+        return None, ("podman (or the controller container) is not "
+                      "reachable - cannot browse host folders.")
+    ins = podman("inspect", name, "--format", "{{.ImageName}}", timeout=30)
+    image = ins.stdout.strip()
+    if ins.returncode != 0 or not image:
+        return None, "Could not determine the controller image."
+    r = podman("run", "--rm", "-v", f"/:{FS_ROOT}" + ("" if rw else ":ro"),
+               image, "sh", "-c", script, timeout=timeout)
+    return r, None
+
+
+def _fs_path(raw):
+    """Validate/normalize a browse path. Returns (path, error)."""
+    p = (raw or "").strip()
+    if not p.startswith("/"):
+        return None, "Path must be absolute."
+    p = os.path.normpath(p)
+    while p.startswith("//"):  # normpath keeps a leading double slash
+        p = p[1:]
+    if ".." in p.split("/"):
+        return None, "Path may not contain '..'."
+    return p, None
+
+
+def op_fs_list(raw):
+    """Child directories of a podman-host path (dirs only, dotdirs hidden)."""
+    path, err = _fs_path(raw)
+    if err:
+        return {"ok": False, "path": raw, "parent": None, "dirs": [], "error": err}
+    q = shlex.quote(FS_ROOT + ("" if path == "/" else path))
+    script = (f'cd {q} 2>/dev/null || {{ echo TAILARR-FS-NODIR >&2; exit 3; }}\n'
+              'for d in */; do [ -d "$d" ] && printf \'%s\\n\' "${d%/}"; done\n'
+              'exit 0\n')
+    r, err = _fs_exec(script)
+    if err:
+        return {"ok": False, "path": path, "parent": None, "dirs": [], "error": err}
+    if "TAILARR-FS-NODIR" in r.stderr:
+        return {"ok": False, "path": path, "parent": None, "dirs": [],
+                "error": "Folder not found on host."}
+    if r.returncode != 0:
+        return {"ok": False, "path": path, "parent": None, "dirs": [],
+                "error": (r.stderr or r.stdout or "listing failed").strip()[-300:]}
+    dirs = sorted(line for line in r.stdout.splitlines() if line)
+    parent = None if path == "/" else (os.path.dirname(path) or "/")
+    return {"ok": True, "path": path, "parent": parent, "dirs": dirs, "error": None}
+
+
+def op_fs_mkdir(raw):
+    """Create a folder on the podman host (mkdir -p)."""
+    path, err = _fs_path(raw)
+    if err:
+        return {"ok": False, "path": raw, "error": err}
+    if path == "/":
+        return {"ok": False, "path": path, "error": "Path must name a folder."}
+    r, err = _fs_exec(f"mkdir -p {shlex.quote(FS_ROOT + path)}", rw=True)
+    if err:
+        return {"ok": False, "path": path, "error": err}
+    if r.returncode != 0:
+        return {"ok": False, "path": path,
+                "error": (r.stderr or r.stdout or "mkdir failed").strip()[-300:]}
+    return {"ok": True, "path": path, "error": None}
+
+
 _host_platform_cache = None
 
 
@@ -4135,6 +4215,16 @@ def api_post(path, data):
 
     if path == "/api/custompods":
         result = op_custompods(data)
+        return (200 if result["ok"] else 400), result
+
+    if path == "/api/fs":
+        do = (data.get("do") or "list").strip()
+        if do == "list":
+            result = op_fs_list(data.get("path") or "/")
+        elif do == "mkdir":
+            result = op_fs_mkdir(data.get("path") or "")
+        else:
+            return 400, {"ok": False, "error": f"unknown do '{do}'"}
         return (200 if result["ok"] else 400), result
 
     if path == "/api/sources":

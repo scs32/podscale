@@ -431,3 +431,20 @@ export interface StatsSnapshot {
     running: number;
   };
 }
+
+// POST /api/fs — browse the PODMAN HOST's directories (what pods actually
+// bind-mount). Backs the FolderEditor "Browse" popover; listing runs in a
+// one-shot helper container, so a call takes a moment.
+export interface FsListResult {
+  ok: boolean;
+  path: string;
+  parent: string | null; // null at "/"
+  dirs: string[]; // child directory names (dotdirs hidden), sorted
+  error: string | null;
+}
+
+export interface FsMkdirResult {
+  ok: boolean;
+  path: string;
+  error: string | null;
+}

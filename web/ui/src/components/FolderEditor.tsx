@@ -1,3 +1,4 @@
+import { FolderBrowser } from "./FolderBrowser";
 import { FormSection } from "./Form";
 
 // The one folder-editing affordance, shared by install-from-catalog, custom
@@ -60,6 +61,7 @@ export function FolderEditor({
             aria-label="Host path"
             onChange={(e) => set(i, { host: e.target.value })}
           />
+          <FolderBrowser value={r.host} onPick={(p) => set(i, { host: p })} />
           <span className="folder-row__arrow">→</span>
           <input
             className="input"

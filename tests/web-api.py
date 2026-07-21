@@ -1398,6 +1398,88 @@ finally:
     app.podman = _real_stats_podman
     app.deployed_services = _real_stats_deployed
 
+# --- /api/fs: host folder browser (one-shot /:/host-root container) -------
+print("fs browser:")
+import subprocess as _sp_fs  # noqa: E402
+
+_fs_calls = []
+
+
+def _fake_fs_podman(tree):
+    """tree: dir path -> list of child dirs (the fake host filesystem)."""
+    def fake(*args, **kw):
+        _fs_calls.append(args)
+        if args[0] == "ps":
+            return _sp_fs.CompletedProcess(
+                args, 0, "tailarr\ntailscale-tailarr\n", "")
+        if args[0] == "inspect":
+            return _sp_fs.CompletedProcess(
+                args, 0, "ghcr.io/scs32/tailarr:v0.1.0\n", "")
+        if args[0] == "run":
+            script = args[-1]
+            if script.startswith("mkdir -p "):
+                return _sp_fs.CompletedProcess(args, 0, "", "")
+            # the list script cd's into a (shlex-quoted) /host-root path
+            path = script.split("\n")[0].split()[1].strip("'")
+            hostpath = path[len("/host-root"):] or "/"
+            if hostpath not in tree:
+                return _sp_fs.CompletedProcess(args, 3, "", "TAILARR-FS-NODIR\n")
+            return _sp_fs.CompletedProcess(
+                args, 0, "".join(d + "\n" for d in tree[hostpath]), "")
+        return _sp_fs.CompletedProcess(args, 0, "", "")
+    return fake
+
+
+_real_fs_podman = app.podman
+app.podman = _fake_fs_podman({
+    "/": ["data", "root"],
+    "/data": ["movies", "tv"],
+    "/data/movies": [],
+})
+try:
+    code, data = post("/api/fs", {"do": "list", "path": "/"})
+    check(code == 200 and data["ok"] and data["dirs"] == ["data", "root"],
+          "list / returns its child dirs")
+    check(data["parent"] is None, "/ has no parent")
+    code, data = post("/api/fs", {"do": "list", "path": "/data"})
+    check(code == 200 and data["dirs"] == ["movies", "tv"]
+          and data["parent"] == "/",
+          "list /data returns children + parent")
+    code, data = post("/api/fs", {"do": "list", "path": "/data/movies/"})
+    check(code == 200 and data["ok"] and data["path"] == "/data/movies"
+          and data["dirs"] == [] and data["parent"] == "/data",
+          "trailing slash normalized; empty dir lists cleanly")
+    check(any(a[0] == "run" and "/:/host-root:ro" in a for a in _fs_calls),
+          "listing mounts the host root read-only")
+    code, data = post("/api/fs", {"do": "list", "path": "/nope"})
+    check(code == 400 and not data["ok"] and "not found" in data["error"],
+          "missing folder reports 'not found', not a raw shell error")
+    code, data = post("/api/fs", {"do": "list", "path": "relative"})
+    check(code == 400 and "absolute" in data["error"],
+          "relative paths rejected")
+    code, data = post("/api/fs", {"do": "list", "path": "/data/../../etc"})
+    check(code == 400 and data["path"] == "/etc"
+          and "not found" in data["error"],
+          "'..' segments normalize to a plain path (no /host-root escape)")
+    code, data = post("/api/fs", {"do": "mkdir", "path": "/data/books"})
+    check(code == 200 and data["ok"] and data["path"] == "/data/books",
+          "mkdir creates a folder")
+    check(any(a[0] == "run" and "/:/host-root" in a
+              and "/:/host-root:ro" not in a for a in _fs_calls),
+          "mkdir mounts the host root read-write")
+    code, data = post("/api/fs", {"do": "mkdir", "path": "/"})
+    check(code == 400, "mkdir / rejected")
+    code, data = post("/api/fs", {"do": "chmod", "path": "/data"})
+    check(code == 400 and "unknown do" in data["error"],
+          "unknown do rejected")
+finally:
+    app.podman = _real_fs_podman
+
+# no podman at all (dev/CI runs): a clean error, not a stack trace
+code, data = post("/api/fs", {"do": "list", "path": "/"})
+check(code == 400 and not data["ok"] and data["error"],
+      "podman-less environment reports a clean error")
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")
