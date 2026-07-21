@@ -10,8 +10,8 @@ import { SpinnerIcon } from "./Icons";
 // grant; a device only becomes a usable relay once it locally runs
 // `tailscale set --relay-server-port=...` — there is no remote enablement
 // (tailscale/tailscale#17791). So the picker lists Tailarr's own registry
-// of relays, and "adding" one either runs the command on the host via
-// host-exec or hands the user the command and waits for proof of traffic.
+// of relays, and "adding" one hands the user the command to run on the
+// device and waits for proof of traffic before marking it active.
 
 function VerifiedChip({ status }: { status: RelayStatus }) {
   const v = status.verified.state;
@@ -49,7 +49,6 @@ function AddRelayDialog({
   const [picked, setPicked] = useState<RelayDevice | null>(null);
   const [manualIp, setManualIp] = useState("");
   const [manualName, setManualName] = useState("");
-  const [hostMode, setHostMode] = useState(false);
 
   useEffect(() => {
     api
@@ -73,12 +72,11 @@ function AddRelayDialog({
   const name = picked
     ? picked.hostname || picked.name
     : manualName.trim() || manualIp.trim();
-  // Three ways to identify the relay: the Tailarr host (controller finds
-  // the address itself), a device from the list, or a typed IP.
-  const ready = hostMode || !!ip;
-  const action: RelayAction = hostMode
-    ? { do: "add-relay", host: true }
-    : { do: "add-relay", ip, name };
+  // Identify the relay by device pick or typed IP. Capability is ALWAYS
+  // enabled on the device itself (no remote path exists) — the entry stays
+  // pending until traffic proves it.
+  const ready = !!ip;
+  const action: RelayAction = { do: "add-relay", ip, name };
 
   return (
     <div className="scrim" onClick={busy ? undefined : onClose}>
@@ -90,30 +88,9 @@ function AddRelayDialog({
             the tailnet policy for you; the device itself must run one
             command (below) before it can actually relay.
           </p>
-          <label
-            className="row card"
-            style={{ cursor: "pointer", marginBottom: "var(--sp-3)" }}
-          >
-            <input
-              type="checkbox"
-              checked={hostMode}
-              onChange={(e) => {
-                setHostMode(e.target.checked);
-                if (e.target.checked) setPicked(null);
-              }}
-            />
-            <div>
-              <div className="row__title">The machine hosting Tailarr</div>
-              <div className="row__meta">
-                Finds its address and enables it automatically (Linux hosts;
-                on a Mac install-mac.sh already did this — pick the Mac
-                below instead).
-              </div>
-            </div>
-          </label>
           {devices === null ? (
             <p style={{ color: "var(--muted)" }}>Loading tailnet devices…</p>
-          ) : hostMode ? null : (
+          ) : (
             <>
               {devErr && <Alert kind="err">{devErr}</Alert>}
               {candidates.length > 0 && (
@@ -184,7 +161,7 @@ function AddRelayDialog({
         <div className="dialog__foot">
           {!ready && !busy && (
             <span className="field__hint" style={{ marginRight: "auto" }}>
-              Tick the host option, pick a device, or enter an IP.
+              Pick a device or enter an IP.
             </span>
           )}
           <button className="btn btn--ghost" disabled={busy} onClick={onClose}>
