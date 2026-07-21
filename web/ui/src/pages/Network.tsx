@@ -1,20 +1,25 @@
 import { useCallback, useEffect, useState } from "react";
-import type { NetworkEntry } from "../types";
+import type { NetworkEntry, RelayAction, RelayStatus } from "../types";
 import { api } from "../api";
 import { FlashView, useFlash } from "../components/Flash";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { RelaySection } from "../components/RelaySection";
 import { SpinnerIcon } from "../components/Icons";
 
 import { dnsUrl, ipUrl } from "../lib/urls";
 
-// Per-pod networking: each pod's tailnet identity (IP + MagicDNS name) and how
-// it's exposed. Every pod is its own tailnet node with HTTPS via `tailscale
-// serve` — the only control here is public/private (Tailscale Funnel), a live
-// serve-config flip with no pod restart. Polls while mounted so enrolling
-// sidecars and busy pods settle into their real state without a reload.
+// Per-pod networking: the peer-relay section (see RelaySection), then each
+// pod's tailnet identity (IP + MagicDNS name) and how it's exposed. Every
+// pod is its own tailnet node with HTTPS via `tailscale serve` — the row
+// controls are public/private (Tailscale Funnel, a live serve-config flip
+// with no pod restart) and, in per-pod relay mode, the pod's relay. Polls
+// while mounted so enrolling sidecars and busy pods settle into their real
+// state without a reload.
 export function Network() {
   const [entries, setEntries] = useState<NetworkEntry[] | null>(null);
+  const [relay, setRelay] = useState<RelayStatus | null>(null);
   const [busyPod, setBusyPod] = useState("");
+  const [relayBusy, setRelayBusy] = useState(false);
   const [confirmPublic, setConfirmPublic] = useState<NetworkEntry | null>(null);
   const { flash, show, clear } = useFlash();
 
@@ -24,6 +29,7 @@ export function Network() {
     } catch (e) {
       show({ kind: "err", text: String(e) });
     }
+    api.relay().then(setRelay).catch(() => {});
   }, [show]);
 
   useEffect(() => {
@@ -31,6 +37,33 @@ export function Network() {
     const t = setInterval(refresh, 10000); // settle enrolling/busy pods
     return () => clearInterval(t);
   }, [refresh]);
+
+  const relayAct = useCallback(
+    async (a: RelayAction): Promise<boolean> => {
+      setRelayBusy(true);
+      try {
+        const r = await api.relayAction(a);
+        setRelay(r.relay);
+        if (!r.ok || r.error)
+          show({ kind: "err", text: r.error ?? "Request failed." });
+        else if (a.do === "add-relay")
+          show({
+            kind: "ok",
+            text: "Relay added. It activates once traffic flows through it.",
+          });
+        return r.ok && !r.error;
+      } catch (e) {
+        show({ kind: "err", text: String(e) });
+        return false;
+      } finally {
+        setRelayBusy(false);
+      }
+    },
+    [show],
+  );
+
+  // Per-pod relay selection — the controller row maps to the "server" key.
+  const perPod = !!relay?.grant_active && relay.mode === "per-pod";
 
   async function setFunnel(e: NetworkEntry, funnel: boolean) {
     setConfirmPublic(null);
@@ -65,6 +98,8 @@ export function Network() {
       </p>
 
       <FlashView flash={flash} onClose={clear} />
+
+      <RelaySection status={relay} busy={relayBusy} onAct={relayAct} />
 
       <div className="section-title">Pods</div>
       {entries === null ? (
@@ -107,6 +142,31 @@ export function Network() {
                 </div>
               </div>
               <div className="spacer" />
+              {perPod && relay && (
+                <select
+                  className="select"
+                  style={{ width: "auto" }}
+                  disabled={relayBusy}
+                  title="Which of your devices relays this pod's traffic when direct connections fail"
+                  value={
+                    relay.pod_relays[e.controller ? "server" : e.name] ?? ""
+                  }
+                  onChange={(ev) =>
+                    relayAct({
+                      do: "set-pod",
+                      pod: e.controller ? "server" : e.name,
+                      id: ev.target.value,
+                    })
+                  }
+                >
+                  <option value="">No relay</option>
+                  {relay.relays.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      via {r.name}
+                    </option>
+                  ))}
+                </select>
+              )}
               {e.busy && <span className="chip chip--busy">{e.busy}…</span>}
               <span className="chip chip--installed">tailscale</span>
               {e.https ? (

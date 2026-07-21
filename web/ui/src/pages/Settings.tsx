@@ -3,7 +3,6 @@ import type { TsApiStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
 import { RegistriesCard } from "../components/RegistriesCard";
-import { RelayCard } from "../components/RelayCard";
 import { TsApiWizard } from "../components/TsApiWizard";
 import { UpgradeCard } from "../components/UpgradeCard";
 
@@ -67,8 +66,7 @@ export function Settings() {
           />
         )}
 
-        {/* Renders nothing unless the host is an apple/container guest. */}
-        <RelayCard />
+        {/* Peer relay moved to the Network page in v0.15.0. */}
 
         <div className="section-title" style={{ marginTop: "var(--sp-6)" }}>
           Private registries

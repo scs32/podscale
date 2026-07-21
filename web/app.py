@@ -39,7 +39,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -1268,27 +1268,90 @@ def _managed_sections(relay_dst=None):
     for s in svcs:
         owners.append(f'"tag:tailarr-svc-{s}": {OWN},')
         owners.append(f'"tag:tailarr-can-{s}": {OWN},')
-    # Peer relay (apple/container installs): a device on the tailnet — in
-    # practice the Mac hosting the guest — relays traffic that would
-    # otherwise fall back to DERP (vmnet NAT blocks direct paths). The cap
-    # grants RELAYING only, never network access. BOTH ends of a connection
-    # need the cap, so src includes autogroup:member (the admin's untagged
-    # phone/laptop). dst = who may ACT as a relay: autogroup:admin covers
-    # the personal Mac without tagging it (tagging a personal device would
-    # strip its user identity); tag:tailarr-relay is for a dedicated relay
-    # box. Validate-rejection of autogroup:admin downgrades dst to member.
-    if relay_dst is None:
-        relay_dst = ""
-        if _relay_grant_wanted():
-            relay_dst = "member" if load_relay().get("dst_fallback") else "admin"
-    if relay_dst:
-        grants.append(
-            '{"src": ["tag:tailarr", "tag:tailarr-user", "autogroup:member"], '
-            f'"dst": ["tag:tailarr-relay", "autogroup:{relay_dst}"], '
-            '"app": {"tailscale.com/cap/relay": []}}, // peer relay')
-        owners.append(f'"tag:tailarr-relay": {OWN},')
+    # Peer relay: see _relay_sections. The cap grants RELAYING only, never
+    # network access; BOTH ends of a connection need it.
+    relay_grants, relay_owners = _relay_sections(relay_dst)
+    grants += relay_grants
+    owners += relay_owners
     attrs = ['{"target": ["tag:tailarr-public"], "attr": ["funnel"]},']
     return {"grants": grants, "tagowners": owners, "nodeattrs": attrs}
+
+
+def _relay_cap(src, dst, note):
+    """One peer-relay cap grant line. src = who may USE the relay (the pod
+    sidecars plus the consumer devices — both ends of a connection need the
+    cap, so untagged member devices are always included); dst = who may ACT
+    as the relay."""
+    return ('{"src": [' + src + '], "dst": [' + dst + '], '
+            '"app": {"tailscale.com/cap/relay": []}}, // ' + note)
+
+
+# Devices allowed to USE a relay alongside the pod sidecars: enrolled user
+# devices and the admin's untagged phone/laptop.
+_RELAY_CONSUMERS = '"tag:tailarr-user", "autogroup:member"'
+
+
+def _relay_sections(relay_dst=None):
+    """Peer-relay grant + tagOwner lines for the managed fences.
+
+    v0.13.0 shipped ONE tailnet-wide grant whose dst was the autogroup
+    ladder (admin -> member on validate-reject): "any admin device may act
+    as a relay". v0.15.0 generalizes: the registry in .relay.json holds
+    VERIFIED relay devices, and the grant dst can name a specific relay's
+    tailnet IP — globally (all pods share it) or per pod (a grant per
+    tag:tailarr-svc-<name>, "server" meaning the controller). With no
+    registry selection the legacy autogroup grant is emitted unchanged, so
+    upgraded installs keep exactly their v0.13.0 behavior.
+
+    relay_dst: None derives everything from saved state; "" force-excludes
+    the grant (the relay-free validate probe); "admin"/"member" force the
+    legacy autogroup dst (downgrade-ladder retries)."""
+    OWN = '["autogroup:admin", "tag:tailarr-ctrl"]'
+    legacy_owner = [f'"tag:tailarr-relay": {OWN},']
+    if relay_dst == "":
+        return [], []
+    if relay_dst in ("admin", "member"):
+        return ([_relay_cap('"tag:tailarr", ' + _RELAY_CONSUMERS,
+                            f'"tag:tailarr-relay", "autogroup:{relay_dst}"',
+                            "peer relay")], legacy_owner)
+    if not _relay_grant_wanted():
+        return [], []
+    r = load_relay()
+    relays = r.get("relays") or {}
+    if (r.get("mode") or "global") == "global":
+        ip = (relays.get(r.get("global_relay") or "") or {}).get("ip")
+        if ip:
+            return ([_relay_cap('"tag:tailarr", ' + _RELAY_CONSUMERS,
+                                f'"{ip}/32"', "peer relay (global)")], [])
+        dst = "member" if r.get("dst_fallback") else "admin"
+        return ([_relay_cap('"tag:tailarr", ' + _RELAY_CONSUMERS,
+                            f'"tag:tailarr-relay", "autogroup:{dst}"',
+                            "peer relay")], legacy_owner)
+    grants = []
+    deployed = set(deployed_services())
+    for key, rid in sorted((r.get("pod_relays") or {}).items()):
+        ip = (relays.get(rid) or {}).get("ip")
+        if not ip:
+            continue
+        if key == "server":
+            src = '"tag:tailarr-ctrl", ' + _RELAY_CONSUMERS
+        elif key in deployed:
+            src = f'"tag:tailarr-svc-{key}", ' + _RELAY_CONSUMERS
+        else:
+            continue  # pod since removed; stale selection stays inert
+        grants.append(_relay_cap(src, f'"{ip}/32"', f"peer relay ({key})"))
+    return grants, []
+
+
+def _legacy_relay_dst_in_use():
+    """True when the emitted grant (if any) uses the autogroup-dst ladder —
+    the only shape the admin->member downgrade rung applies to. Specific-IP
+    dsts skip straight to the disable rung on validate-reject."""
+    r = load_relay()
+    if (r.get("mode") or "global") != "global":
+        return False
+    return not ((r.get("relays") or {})
+                .get(r.get("global_relay") or "") or {}).get("ip")
 
 
 def _sections_prefix_ok(sections):
@@ -2127,7 +2190,7 @@ def _relay_downgrade_after_reject(raw, resp):
     if code != 200 or '"message"' in presp:
         return None  # broken with or without the grant — not ours
     r = load_relay()
-    if not r.get("dst_fallback"):
+    if not r.get("dst_fallback") and _legacy_relay_dst_in_use():
         r["dst_fallback"] = True
         print("peer relay: validate rejected autogroup:admin dst — "
               "retrying with autogroup:member")
@@ -2143,17 +2206,40 @@ def _relay_downgrade_after_reject(raw, resp):
     return _managed_sections()
 
 
+def _relay_ips_in_status(raw):
+    """Tailnet IPs of relays CURRENTLY carrying traffic, from a `tailscale
+    status --json` document (PeerRelay is "ip:port" or "[v6]:port")."""
+    try:
+        st = json.loads(raw)
+    except ValueError:
+        return set()
+    ips = set()
+    for p in (st.get("Peer") or {}).values():
+        pr = p.get("PeerRelay") or ""
+        if p.get("Active") and pr:
+            ips.add(pr.rsplit(":", 1)[0].strip("[]"))
+    return ips
+
+
 def relay_verify():
     """Best-effort connectivity classification from the controller's own
     sidecar: are active peers reached via peer relay, directly, or DERP?
-    Cached into .relay.json; the Settings banner clears on peer-relay or
-    direct (direct means the problem this feature exists for is absent)."""
+    Cached into .relay.json; the relay banner clears on peer-relay or
+    direct (direct means the problem this feature exists for is absent).
+
+    Doubles as the registry's verification pass: Tailscale has no "list
+    relay-capable nodes" API, so a relay is only PROVEN once traffic is
+    seen flowing through it. Pending registry entries whose IP shows up in
+    PeerRelay graduate to active, and relays we never knew about are
+    discovered into the registry (e.g. the Mac set up by install-mac.sh)."""
     sidecar = f"tailscale-{_controller_name() or 'tailarr'}"
     r = podman("exec", sidecar, "tailscale", "status", "--json", timeout=20)
+    seen = set()
     if r.returncode != 0:
         state, detail = "unknown", (r.stdout + r.stderr).strip()[:200]
     else:
         state, detail = _classify_ts_status(r.stdout)
+        seen = _relay_ips_in_status(r.stdout)
         if state == "derp":
             # Old sidecar images (<1.86) can't use peer relays at all —
             # surface the version so "stuck on derp" is diagnosable.
@@ -2161,8 +2247,16 @@ def relay_verify():
             if v.returncode == 0 and v.stdout.split():
                 detail = f"sidecar tailscale {v.stdout.split()[0]}"
     rec = load_relay()
-    rec["verified"] = {"state": state, "at": int(time.time()),
-                       "detail": detail}
+    now = int(time.time())
+    if seen:
+        relays = rec.setdefault("relays", {})
+        for ip in seen:
+            entry = relays.setdefault(
+                ip, {"name": ip, "ip": ip, "added_at": now,
+                     "discovered": True})
+            entry["status"] = "active"
+            entry["verified_at"] = now
+    rec["verified"] = {"state": state, "at": now, "detail": detail}
     save_relay(rec)
     return rec["verified"]
 
@@ -2189,26 +2283,160 @@ def _classify_ts_status(raw):
     return "unknown", "no active peer connections to classify"
 
 
+RELAY_DEFAULT_PORT = 40000
+
+
+def _relay_command(port):
+    """The one command a device must run LOCALLY to become relay-capable.
+    There is no remote/API enablement (tailscale/tailscale#17791) — the
+    controller authors the grant; the device owner runs this."""
+    return f"tailscale set --relay-server-port={port}"
+
+
 def status_relay():
     """Disk-only (cheap to poll); preflight/verify writes refresh it."""
     platform = host_platform()
     r = load_relay()
     pf = r.get("preflight") or {}
+    port = int(r.get("port") or RELAY_DEFAULT_PORT)
+    relays = [dict(e, id=rid)
+              for rid, e in sorted((r.get("relays") or {}).items())]
     return {"platform": platform,
-            "applicable": platform == "apple-container",
+            # v0.15.0: the feature is offered on EVERY platform (DERP
+            # fallback isn't apple/container-specific); `recommended`
+            # keeps the strong nudge for the vmnet-NAT case.
+            "applicable": True,
+            "recommended": platform == "apple-container",
             "enabled": r.get("enabled"),
             "eligible": bool(pf.get("eligible")),
             "reasons": pf.get("reasons") or [],
             "counts": pf.get("counts") or {},
             "grant_active": _relay_grant_wanted(),
             "dst_fallback": bool(r.get("dst_fallback")),
+            "mode": r.get("mode") or "global",
+            "relays": relays,
+            "global_relay": r.get("global_relay") or "",
+            "pod_relays": r.get("pod_relays") or {},
+            "port": port,
+            "command": _relay_command(port),
             "verified": r.get("verified")
             or {"state": "unknown", "at": 0, "detail": ""}}
 
 
-def op_relay(do):
+def status_relay_devices():
+    """GET /api/relay/devices — relay CANDIDATES for the add-relay picker:
+    every tailnet device that isn't part of the Tailarr fleet (a sidecar
+    can't relay for itself). Tailscale has no relay-capability listing, so
+    candidacy is just membership; capability is proven later by
+    relay_verify() seeing traffic."""
+    code, data = ts_api("GET", "/tailnet/-/devices")
+    if code != 200:
+        return {"ok": False, "error": _snip(data), "devices": []}
+    out = []
+    for d in data.get("devices", []) or []:
+        if any(str(t).startswith("tag:tailarr")
+               for t in d.get("tags") or []):
+            continue
+        ip4 = next((a for a in d.get("addresses") or [] if "." in a), "")
+        if not ip4:
+            continue
+        out.append({"hostname": d.get("hostname") or "",
+                    "name": (d.get("name") or "").split(".")[0],
+                    "ip": ip4,
+                    "os": d.get("os") or "",
+                    "user": d.get("user") or ""})
+    return {"ok": True, "error": None, "devices": out}
+
+
+def _relay_result(ok, sync, error=None, **extra):
+    out = {"ok": ok, "error": error or (sync or {}).get("error"),
+           "relay": status_relay()}
+    if sync is not None:
+        out["sync"] = sync
+    out.update(extra)
+    return out
+
+
+def _op_relay_add(data):
+    """Register a relay device. The grant is authored by the next policy
+    sync (if selected); CAPABILITY can only be enabled on the device itself
+    — try_host attempts it via host-exec (the machine hosting this install
+    on linux hosts; apple/container guests can't nsenter, install-mac.sh
+    covers the Mac), otherwise the command is returned for the user to run.
+    Entries start pending and graduate to active when relay_verify() sees
+    traffic through them."""
+    ip = (data.get("ip") or "").strip()
+    name = (data.get("name") or "").strip() or ip
+    if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip):
+        return {"ok": False, "relay": status_relay(),
+                "error": "A tailnet IPv4 address is required."}
+    r = load_relay()
+    port = int(r.get("port") or RELAY_DEFAULT_PORT)
+    relays = r.setdefault("relays", {})
+    entry = relays.setdefault(ip, {"ip": ip, "added_at": int(time.time())})
+    entry["name"] = name
+    entry.setdefault("status", "pending")
+    command = _relay_command(port)
+    if data.get("try_host"):
+        rc, out = _host_exec("tailarr-relay-set", command)
+        if rc == 0:
+            # The command ran on the host itself — capability is on.
+            entry["status"] = "active"
+            entry["command_run"] = True
+        else:
+            entry["host_exec_error"] = (out or "").strip()[:200]
+    # First relay in global mode becomes THE relay — the obvious intent.
+    if (r.get("mode") or "global") == "global" and not r.get("global_relay"):
+        r["global_relay"] = ip
+    save_relay(r)
+    return _relay_result(True, ts_policy_sync(), command=command)
+
+
+def _op_relay_remove(data):
+    rid = (data.get("id") or "").strip()
+    r = load_relay()
+    if rid not in (r.get("relays") or {}):
+        return {"ok": False, "relay": status_relay(),
+                "error": "No such relay."}
+    del r["relays"][rid]
+    if r.get("global_relay") == rid:
+        r["global_relay"] = ""
+    r["pod_relays"] = {k: v for k, v in (r.get("pod_relays") or {}).items()
+                       if v != rid}
+    save_relay(r)
+    return _relay_result(True, ts_policy_sync())
+
+
+def _op_relay_select(data):
+    """set-global {id} / set-pod {pod, id} — id "" clears the selection
+    (global falls back to the legacy autogroup grant; a pod simply has no
+    relay). Selections drive which cap grants the splice emits."""
+    r = load_relay()
+    rid = (data.get("id") or "").strip()
+    if rid and rid not in (r.get("relays") or {}):
+        return {"ok": False, "relay": status_relay(),
+                "error": "No such relay."}
+    if data.get("do") == "set-global":
+        r["global_relay"] = rid
+    else:
+        pod = (data.get("pod") or "").strip()
+        if pod != "server" and pod not in deployed_services():
+            return {"ok": False, "relay": status_relay(),
+                    "error": "Unknown service."}
+        pr = r.setdefault("pod_relays", {})
+        if rid:
+            pr[pod] = rid
+        else:
+            pr.pop(pod, None)
+    save_relay(r)
+    return _relay_result(True, ts_policy_sync())
+
+
+def op_relay(do, data=None):
     """POST /api/relay — enable/disable are the user's explicit override
-    (recorded as such); recheck reruns pre-flight + sidecar verification."""
+    (recorded as such); recheck reruns pre-flight + sidecar verification;
+    the rest manage the relay registry and selections (v0.15.0)."""
+    data = data or {}
     if do == "enable":
         r = load_relay()
         r["preflight"] = ts_relay_preflight()  # record, but don't gate on it
@@ -2216,23 +2444,36 @@ def op_relay(do):
         r["decided_by"] = "user"
         save_relay(r)
         sync = ts_policy_sync()
-        return {"ok": sync["ok"], "error": sync["error"],
-                "relay": status_relay(), "sync": sync}
+        return _relay_result(sync["ok"], sync)
     if do == "disable":
         r = load_relay()
         r["enabled"] = False
         r["decided_by"] = "user"
         save_relay(r)
         sync = ts_policy_sync()  # splice drops the grant
-        return {"ok": sync["ok"], "error": sync["error"],
-                "relay": status_relay(), "sync": sync}
+        return _relay_result(sync["ok"], sync)
     if do == "recheck":
         r = load_relay()
         r["preflight"] = ts_relay_preflight()
         save_relay(r)
         relay_verify()
         sync = ts_policy_sync()  # a newly-eligible auto grant lands now
-        return {"ok": True, "relay": status_relay(), "sync": sync}
+        return _relay_result(True, sync)
+    if do == "mode":
+        mode = (data.get("mode") or "").strip()
+        if mode not in ("global", "per-pod"):
+            return {"ok": False, "relay": status_relay(),
+                    "error": "mode must be 'global' or 'per-pod'"}
+        r = load_relay()
+        r["mode"] = mode
+        save_relay(r)
+        return _relay_result(True, ts_policy_sync())
+    if do == "add-relay":
+        return _op_relay_add(data)
+    if do == "remove-relay":
+        return _op_relay_remove(data)
+    if do in ("set-global", "set-pod"):
+        return _op_relay_select(data)
     return {"ok": False, "error": f"unknown do '{do}'"}
 
 
@@ -3529,6 +3770,8 @@ def api_get(path):
         return 200, upgrade_status()
     if path == "/api/relay":
         return 200, status_relay()
+    if path == "/api/relay/devices":
+        return 200, status_relay_devices()
     if path == "/api/tsapi":
         return 200, status_tsapi()
     if path == "/api/pods":
@@ -3707,7 +3950,7 @@ def api_post(path, data):
         return (200 if result["ok"] else 400), result
 
     if path == "/api/relay":
-        result = op_relay((data.get("do") or "").strip())
+        result = op_relay((data.get("do") or "").strip(), data)
         return (200 if result["ok"] else 400), result
 
     # --- credential wizard (Settings) ---

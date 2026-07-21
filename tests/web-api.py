@@ -865,11 +865,15 @@ check(app.registry_env() is None,
 # --- peer relay: platform gate, pre-flight, grant, fallback, verify -------
 import types  # noqa: E402
 
-# Before any .host.json exists the whole feature is inert.
+# v0.15.0: the feature is offered on every platform (applicable always
+# true) but nothing is granted or recommended before a platform fact —
+# auto-emission stays apple-container-only.
 code, data = get("/api/relay")
-check(code == 200 and data["applicable"] is False
-      and data["grant_active"] is False,
-      "relay is not applicable before a platform fact exists")
+check(code == 200 and data["applicable"] is True
+      and data["recommended"] is False
+      and data["grant_active"] is False
+      and data["mode"] == "global" and data["relays"] == [],
+      "relay is offered but inert before a platform fact exists")
 code, data = get("/api/info")
 check(data["host_platform"] == "unknown" and "relay" in data,
       "/api/info carries host_platform + relay")
@@ -1067,6 +1071,148 @@ try:
 finally:
     app.podman = _real_podman5
     app._controller_name = _real_ctrl5
+
+# --- relay registry (v0.15.0): picker, modes, per-pod grants, verify ------
+_real_sync6 = app.ts_policy_sync
+_real_preflight6 = app.ts_relay_preflight
+_real_ts_api6 = app.ts_api
+_real_host_exec6 = app._host_exec
+try:
+    app.ts_policy_sync = lambda: {"ok": True, "changed": True, "error": None}
+    app.ts_relay_preflight = lambda: {"eligible": False, "reasons": ["x"],
+                                      "counts": {}, "fences_present": True,
+                                      "checked_at": 0}
+    app._host_exec = lambda helper, script, timeout=60: (-1, "no host")
+
+    code, data = post("/api/relay", {"do": "enable"})
+    check(code == 200 and data["relay"]["enabled"] is True,
+          "feature re-enabled for the registry suite")
+    _r = app.load_relay()
+    _r.pop("dst_fallback", None)  # learned during the ladder suite; reset
+    app.save_relay(_r)
+
+    code, data = post("/api/relay", {"do": "add-relay", "ip": "not-an-ip"})
+    check(code == 400, "add-relay rejects a non-IP")
+
+    code, data = post("/api/relay", {"do": "add-relay", "ip": "100.99.0.5",
+                                     "name": "office-mac"})
+    check(code == 200 and data["command"].startswith("tailscale set "),
+          "add-relay returns the local enable command")
+    rl = data["relay"]
+    # (the registry already holds 100.64.0.9, auto-discovered by the
+    # classification suite's relay_verify run above — by design)
+    e5 = [e for e in rl["relays"] if e["id"] == "100.99.0.5"][0]
+    check(e5["status"] == "pending" and e5["name"] == "office-mac",
+          "the relay lands in the registry as pending")
+    check(rl["global_relay"] == "100.99.0.5",
+          "the first explicitly-added relay in global mode is auto-selected")
+    secs = app._managed_sections()
+    relay_lines = [ln for ln in secs["grants"] if "cap/relay" in ln]
+    check(len(relay_lines) == 1 and '"100.99.0.5/32"' in relay_lines[0]
+          and "autogroup:" not in relay_lines[0].split('"dst"')[1].split("app")[0],
+          "global grant dst is the specific relay IP, not the autogroup ladder")
+    check(not any("tag:tailarr-relay" in ln for ln in secs["tagowners"]),
+          "specific-IP dst drops the tag:tailarr-relay owner")
+    check(app._sections_prefix_ok(secs),
+          "IP dst passes the tag prefix invariant")
+    check(app._legacy_relay_dst_in_use() is False,
+          "specific-IP dst opts out of the admin->member downgrade rung")
+
+    # try_host: a successful host-exec marks the relay active immediately.
+    app._host_exec = lambda helper, script, timeout=60: (0, "ok")
+    code, data = post("/api/relay", {"do": "add-relay", "ip": "100.99.0.7",
+                                     "name": "vm-host", "try_host": True})
+    e7 = [e for e in data["relay"]["relays"] if e["id"] == "100.99.0.7"][0]
+    check(code == 200 and e7["status"] == "active" and e7["command_run"],
+          "try_host success marks the relay active")
+
+    # Clearing the global selection restores the legacy autogroup grant.
+    code, data = post("/api/relay", {"do": "set-global", "id": ""})
+    secs = app._managed_sections()
+    relay_lines = [ln for ln in secs["grants"] if "cap/relay" in ln]
+    check(code == 200 and len(relay_lines) == 1
+          and "autogroup:admin" in relay_lines[0]
+          and app._legacy_relay_dst_in_use() is True,
+          "clearing the global relay restores the autogroup-dst grant")
+
+    # Per-pod mode: one grant per selection, keyed on the svc tag; the
+    # "server" key means the controller.
+    code, data = post("/api/relay", {"do": "mode", "mode": "per-pod"})
+    check(code == 200 and data["relay"]["mode"] == "per-pod",
+          "mode flips to per-pod")
+    secs = app._managed_sections()
+    check(not any("cap/relay" in ln for ln in secs["grants"]),
+          "per-pod mode with no selections emits no relay grants")
+    code, data = post("/api/relay", {"do": "set-pod", "pod": "nope",
+                                     "id": "100.99.0.5"})
+    check(code == 400, "set-pod rejects an unknown service")
+    code, data = post("/api/relay", {"do": "set-pod", "pod": "apitest",
+                                     "id": "100.99.0.5"})
+    check(code == 200 and data["relay"]["pod_relays"]["apitest"]
+          == "100.99.0.5", "a pod gets its own relay")
+    code, data = post("/api/relay", {"do": "set-pod", "pod": "server",
+                                     "id": "100.99.0.7"})
+    check(code == 200, "the controller (server) gets its own relay")
+    relay_lines = [ln for ln in app._managed_sections()["grants"]
+                   if "cap/relay" in ln]
+    check(len(relay_lines) == 2, "one grant per per-pod selection")
+    check(any("tag:tailarr-svc-apitest" in ln and '"100.99.0.5/32"' in ln
+              for ln in relay_lines),
+          "the pod grant pairs its svc tag with its chosen relay")
+    check(any("tag:tailarr-ctrl" in ln and '"100.99.0.7/32"' in ln
+              for ln in relay_lines),
+          "the server grant pairs tag:tailarr-ctrl with its relay")
+    code, data = post("/api/relay", {"do": "set-pod", "pod": "apitest",
+                                     "id": ""})
+    check(code == 200 and "apitest" not in data["relay"]["pod_relays"],
+          "set-pod with an empty id clears the selection")
+
+    # remove-relay scrubs every reference.
+    code, data = post("/api/relay", {"do": "remove-relay",
+                                     "id": "100.99.0.7"})
+    check(code == 200
+          and all(e["id"] != "100.99.0.7" for e in data["relay"]["relays"])
+          and data["relay"]["pod_relays"] == {},
+          "remove-relay drops the entry and its selections")
+
+    # Candidate picker: fleet-tagged devices are filtered out.
+    app.ts_api = lambda m, p, b=None: (200, {"devices": [
+        {"hostname": "mac", "name": "mac.tail.ts.net", "os": "macOS",
+         "user": "s@x", "addresses": ["100.64.0.1", "fd7a::1"], "tags": []},
+        {"hostname": "pod", "name": "pod.tail.ts.net", "os": "linux",
+         "user": "s@x", "addresses": ["100.64.0.2"],
+         "tags": ["tag:tailarr"]}]})
+    code, data = get("/api/relay/devices")
+    check(code == 200 and [d["ip"] for d in data["devices"]]
+          == ["100.64.0.1"],
+          "/api/relay/devices lists candidates, filtering the fleet")
+
+    # relay_verify graduates pending entries seen in PeerRelay and
+    # discovers relays it never knew about.
+    r = app.load_relay()
+    r["relays"]["100.99.0.5"]["status"] = "pending"
+    app.save_relay(r)
+    app._controller_name = lambda: "tailarr"
+    app.podman = _fake_status_podman(
+        {"Peer": {"a": {"Active": True,
+                        "PeerRelay": "100.99.0.5:40000"},
+                  "b": {"Active": True,
+                        "PeerRelay": "100.99.0.9:40000"}}})
+    check(app.relay_verify()["state"] == "peer-relay",
+          "verify classifies peer-relay traffic")
+    saved = app.load_relay()["relays"]
+    check(saved["100.99.0.5"]["status"] == "active",
+          "a pending relay graduates when traffic flows through it")
+    check(saved["100.99.0.9"]["status"] == "active"
+          and saved["100.99.0.9"].get("discovered"),
+          "an unknown active relay is discovered into the registry")
+finally:
+    app.podman = _real_podman5
+    app._controller_name = _real_ctrl5
+    app.ts_policy_sync = _real_sync6
+    app.ts_relay_preflight = _real_preflight6
+    app.ts_api = _real_ts_api6
+    app._host_exec = _real_host_exec6
 
 # --- stats: /api/stats per-pod live resources + shared collector ---------
 _real_stats_podman = app.podman
