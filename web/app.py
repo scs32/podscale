@@ -39,7 +39,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.15.3"
+VERSION = "0.16.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -84,6 +84,13 @@ NFS_CLIENT_RE = re.compile(r"[A-Za-z0-9.\-*/:_]+")
 SOURCES_FILE = os.path.join(PODS_DIR, ".sources.json")
 CATALOG_TTL = 60  # seconds to cache a fetched source catalog
 _catalog_cache = {}  # url -> (expires_at, services, error)
+
+# User-authored catalog entries (the "custom" source): the Add-custom-pod
+# dialog on the Catalog page SAVES a definition here instead of installing
+# directly — the entry then installs/reinstalls like any catalog service.
+# Each entry: the same spec shape a catalog file carries (image, command,
+# ports, environment, volumes).
+CUSTOMPODS_FILE = os.path.join(PODS_DIR, ".custompods.json")
 
 # Image update checks: remote digests (via skopeo) vs local RepoDigests,
 # cached here. Refreshed daily (piggybacked on /api/pods) or on demand.
@@ -254,14 +261,34 @@ def fetch_catalog(url, force=False):
     return services, error
 
 
-def all_services():
-    """Merged catalog: built-in homelab.js + enabled sources.
+def load_custompods():
+    try:
+        with open(CUSTOMPODS_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
-    Built-in and earlier sources win on name collision. Each spec is tagged
-    with `_source` ("built-in" or the source name). Returns (dict, errors).
+
+def save_custompods(pods_):
+    tmp = CUSTOMPODS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(pods_, f, indent=2)
+    os.replace(tmp, CUSTOMPODS_FILE)
+
+
+def all_services():
+    """Merged catalog: built-in homelab.js + user custom pods + sources.
+
+    Precedence on name collision: built-in, then the user's own custom
+    entries, then external sources. Each spec is tagged with `_source`
+    ("built-in", "custom", or the source name). Returns (dict, errors).
     """
     merged = {name: {**spec, "_source": spec.get("_source", "built-in")}
               for name, spec in load_services().items()}
+    for name, spec in sorted(load_custompods().items()):
+        if name not in merged:
+            merged[name] = {**spec, "_source": "custom"}
     errors = {}
     for sname, s in sorted(load_sources().items()):
         services, err = fetch_catalog(s["url"])
@@ -2588,6 +2615,47 @@ def status_catalogs():
     return out
 
 
+def op_custompods(data):
+    """POST /api/custompods {do: save|delete, name, image, command, ports,
+    environment, volumes} — author/remove entries in the "custom" catalog
+    source. Deleting an entry never touches a deployed pod (remove that
+    from the Dashboard/Catalog like any other)."""
+    do = (data.get("do") or "save").strip()
+    name = (data.get("name") or "").strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name or ""):
+        return {"ok": False, "name": name,
+                "error": "Name must be lowercase letters, digits, dashes."}
+    pods_ = load_custompods()
+    if do == "delete":
+        if name not in pods_:
+            return {"ok": False, "name": name,
+                    "error": "No such custom pod."}
+        del pods_[name]
+        save_custompods(pods_)
+        return {"ok": True, "name": name, "error": None}
+    if do != "save":
+        return {"ok": False, "name": name, "error": f"unknown do '{do}'"}
+    image = (data.get("image") or "").strip()
+    if not image:
+        return {"ok": False, "name": name, "error": "An image is required."}
+    if name in load_services():
+        return {"ok": False, "name": name,
+                "error": "That name belongs to a built-in catalog service."}
+    pods_[name] = {
+        "name": name,
+        "image": image,
+        "command": (data.get("command") or "").strip(),
+        "ports": data.get("ports") or {},
+        "environment": data.get("environment") or {},
+        "volumes": data.get("volumes") or {},
+        "network_mode": "bridge",
+        "restart_policy": "unless-stopped",
+        "created": pods_.get(name, {}).get("created") or int(time.time()),
+    }
+    save_custompods(pods_)
+    return {"ok": True, "name": name, "error": None}
+
+
 def op_catalog_set(key, enabled):
     if key not in {c["key"] for c in BUILTIN_CATALOGS}:
         return {"ok": False, "key": key, "error": "Unknown catalog."}
@@ -4063,6 +4131,10 @@ def api_post(path, data):
     if path == "/api/catalogs":
         result = op_catalog_set((data.get("key") or "").strip(),
                                 bool(data.get("enabled")))
+        return (200 if result["ok"] else 400), result
+
+    if path == "/api/custompods":
+        result = op_custompods(data)
         return (200 if result["ok"] else 400), result
 
     if path == "/api/sources":

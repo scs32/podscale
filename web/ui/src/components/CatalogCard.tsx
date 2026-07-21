@@ -7,10 +7,14 @@ export function CatalogCard({
   item,
   onInstall,
   onRemove,
+  onDeleteCustom,
 }: {
   item: CatalogItem;
   onInstall: (name: string) => void;
   onRemove: (name: string) => void;
+  // Only for source === "custom" entries that aren't installed: removes
+  // the DEFINITION from the catalog (never touches a deployed pod).
+  onDeleteCustom?: (name: string) => void;
 }) {
   const stateClass = item.installed && item.state ? ` catalog-card--${item.state}` : "";
   return (
@@ -43,12 +47,23 @@ export function CatalogCard({
             Remove
           </button>
         ) : (
-          <button
-            className="btn btn--primary btn--sm"
-            onClick={() => onInstall(item.name)}
-          >
-            Install
-          </button>
+          <>
+            {item.source === "custom" && onDeleteCustom && (
+              <button
+                className="btn btn--ghost btn--sm"
+                title="Remove this definition from the catalog"
+                onClick={() => onDeleteCustom(item.name)}
+              >
+                Delete
+              </button>
+            )}
+            <button
+              className="btn btn--primary btn--sm"
+              onClick={() => onInstall(item.name)}
+            >
+              Install
+            </button>
+          </>
         )}
       </div>
       <div className="catalog-card__meta">{item.image}</div>

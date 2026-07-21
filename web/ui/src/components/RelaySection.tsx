@@ -203,7 +203,7 @@ export function RelaySection({
   return (
     <>
       <div className="section-title">Peer relay</div>
-      <div className="card" style={{ marginBottom: "var(--sp-6)" }}>
+      <div className="card panel" style={{ marginBottom: "var(--sp-8)" }}>
         <div className="preview-row">
           <p style={{ color: "var(--muted)", margin: 0, flex: 1, minWidth: 260 }}>
             When pods can't connect directly, traffic falls back to
@@ -241,7 +241,7 @@ export function RelaySection({
         </div>
 
         {!on && status.recommended && (
-          <div style={{ marginTop: "var(--sp-3)" }}>
+          <div style={{ marginTop: "var(--sp-4)" }}>
             <Alert kind="info">
               This install runs behind apple/container's NAT, so pod traffic
               almost certainly uses DERP — a peer relay on your Mac fixes
@@ -258,8 +258,8 @@ export function RelaySection({
         )}
 
         {on && (
-          <div style={{ marginTop: "var(--sp-4)" }}>
-            <div className="preview-row" style={{ marginBottom: "var(--sp-3)" }}>
+          <div style={{ marginTop: "var(--sp-6)" }}>
+            <div className="preview-row" style={{ marginBottom: "var(--sp-4)" }}>
               <span className="preview-label">Relay devices</span>
               <div className="spacer" />
               <button
@@ -292,7 +292,7 @@ export function RelaySection({
                 tailnet may relay once it runs the enable command.
               </p>
             ) : (
-              <div className="row-list" style={{ marginBottom: "var(--sp-3)" }}>
+              <div className="row-list" style={{ marginBottom: "var(--sp-4)" }}>
                 {status.relays.map((r) => (
                   <div key={r.id} className="row card">
                     <div style={{ minWidth: 140 }}>

@@ -274,6 +274,25 @@ export const api = {
   sources: () =>
     getJSON<{ sources: Source[]; catalogs: BuiltinCatalog[] }>("/api/sources"),
 
+  customPodSave: (spec: {
+    name: string;
+    image: string;
+    command?: string;
+    ports?: Record<string, string>;
+    environment?: Record<string, string>;
+    volumes?: Record<string, string>;
+  }) =>
+    postJSON<{ ok: boolean; name: string; error: string | null }>(
+      "/api/custompods",
+      { do: "save", ...spec },
+    ),
+
+  customPodDelete: (name: string) =>
+    postJSON<{ ok: boolean; name: string; error: string | null }>(
+      "/api/custompods",
+      { do: "delete", name },
+    ),
+
   catalogSet: (key: string, enabled: boolean) =>
     postJSON<{ ok: boolean; error: string | null }>("/api/catalogs", {
       key,

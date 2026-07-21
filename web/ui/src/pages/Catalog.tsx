@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import type { BuiltinCatalog, CatalogItem, Source } from "../types";
 import { api } from "../api";
+import { AddCustomPodModal } from "../components/AddCustomPodModal";
 import { CatalogCard } from "../components/CatalogCard";
 import { InstallModal } from "../components/InstallModal";
 import { SourcesPanel } from "../components/SourcesPanel";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Alert } from "../components/Alert";
 import { FlashView, useFlash } from "../components/Flash";
-import { RefreshIcon, SearchIcon, SpinnerIcon } from "../components/Icons";
+import {
+  PlusIcon,
+  RefreshIcon,
+  SearchIcon,
+  SpinnerIcon,
+} from "../components/Icons";
 
 export function Catalog() {
   // /install/<name> deep-links (e.g. from the Monitor page) land here with
@@ -22,6 +28,7 @@ export function Catalog() {
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [showSources, setShowSources] = useState(false);
+  const [showAddCustom, setShowAddCustom] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
@@ -108,8 +115,7 @@ export function Catalog() {
     <>
       <h1 className="page-title">Catalog</h1>
       <p style={{ color: "var(--muted)", margin: 0 }}>
-        Install a service, or{" "}
-        <Link to="/custom">deploy any OCI image as a custom pod</Link>.
+        Install a service — or add any OCI image as a custom pod.
       </p>
 
       {error && (
@@ -177,6 +183,14 @@ export function Catalog() {
         >
           Sources{sources.length ? ` (${sources.length})` : ""}
         </button>
+        <button
+          className="btn btn--sm"
+          title="Describe any OCI image and add it to the catalog"
+          onClick={() => setShowAddCustom(true)}
+        >
+          <PlusIcon className="btn-icon" />
+          Custom pod
+        </button>
       </div>
 
       {catalog && filtered.length === 0 ? (
@@ -191,6 +205,15 @@ export function Catalog() {
               item={item}
               onInstall={setInstalling}
               onRemove={setRemoving}
+              onDeleteCustom={async (name) => {
+                const r = await api.customPodDelete(name);
+                show(
+                  r.ok
+                    ? { kind: "ok", text: `Removed ${name} from the catalog.` }
+                    : { kind: "err", text: r.error ?? "Delete failed." },
+                );
+                await load();
+              }}
             />
           ))}
         </div>
@@ -204,6 +227,19 @@ export function Catalog() {
             if (installParam) navigate("/catalog", { replace: true });
           }}
           onChanged={load}
+        />
+      )}
+
+      {showAddCustom && (
+        <AddCustomPodModal
+          onSaved={() => {
+            show({
+              kind: "ok",
+              text: "Added to the catalog under the custom source — install it from its card.",
+            });
+            load();
+          }}
+          onClose={() => setShowAddCustom(false)}
         />
       )}
 

@@ -1,0 +1,154 @@
+/* Tailarr themes — token override sets applied via <html data-theme="…">.
+ *
+ * A theme is JUST a token remap; component styles never change. "signal"
+ * (the brand default, Signal Cyan on slate) lives in tailarr.css :root and
+ * needs no block here. Themes are selected in Settings → Themes and
+ * persisted in localStorage (lib/theme.ts). Sharing/importing themes is a
+ * planned follow-up — keep every theme expressible as this flat token set.
+ */
+
+/* Midnight — indigo on deep navy */
+:root[data-theme="midnight"] {
+  --bg: #0B1120; --surface: #151E33; --surface-2: #1C2947;
+  --border: #2C3A5C; --border-soft: #24304d;
+  --accent: #818CF8; --accent-strong: #6366F1;
+  --accent-contrast: #10123A; --accent-tint: rgba(129, 140, 248, 0.13);
+  --glow: rgba(129, 140, 248, 0.08);
+  --ring: 0 0 0 3px rgba(129, 140, 248, 0.35);
+}
+
+/* Aurora — sea-green on deep pine */
+:root[data-theme="aurora"] {
+  --bg: #0A1512; --surface: #13241F; --surface-2: #1A2F29;
+  --border: #2A473E; --border-soft: #223a33;
+  --accent: #34D399; --accent-strong: #10B981;
+  --accent-contrast: #052E22; --accent-tint: rgba(52, 211, 153, 0.12);
+  --glow: rgba(52, 211, 153, 0.08);
+  --ring: 0 0 0 3px rgba(52, 211, 153, 0.35);
+  --well: rgba(4, 12, 10, 0.5);
+}
+
+/* Ember — amber on charcoal */
+:root[data-theme="ember"] {
+  --bg: #171210; --surface: #241D19; --surface-2: #2E2520;
+  --border: #453931; --border-soft: #392f29;
+  --text: #F1EAE4; --muted: #A89C92; --faint: #776C63;
+  --accent: #FB923C; --accent-strong: #F97316;
+  --accent-contrast: #2A1503; --accent-tint: rgba(251, 146, 60, 0.13);
+  --glow: rgba(251, 146, 60, 0.07);
+  --ring: 0 0 0 3px rgba(251, 146, 60, 0.35);
+  --well: rgba(10, 7, 5, 0.45); --mesh-dot: rgba(168, 156, 146, 0.10);
+}
+
+/* Orchid — violet on plum-black */
+:root[data-theme="orchid"] {
+  --bg: #141021; --surface: #1F1933; --surface-2: #292142;
+  --border: #3D3260; --border-soft: #332a50;
+  --accent: #C084FC; --accent-strong: #A855F7;
+  --accent-contrast: #23093E; --accent-tint: rgba(192, 132, 252, 0.13);
+  --glow: rgba(192, 132, 252, 0.08);
+  --ring: 0 0 0 3px rgba(192, 132, 252, 0.35);
+}
+
+/* Rosewood — rose on warm slate */
+:root[data-theme="rosewood"] {
+  --bg: #191114; --surface: #261A1F; --surface-2: #302128;
+  --border: #4A3340; --border-soft: #3c2a34;
+  --text: #F2E7EB; --muted: #A9949C; --faint: #77646C;
+  --accent: #FB7185; --accent-strong: #F43F5E;
+  --accent-contrast: #35060F; --accent-tint: rgba(251, 113, 133, 0.13);
+  --glow: rgba(251, 113, 133, 0.07);
+  --ring: 0 0 0 3px rgba(251, 113, 133, 0.35);
+  --well: rgba(11, 6, 8, 0.45); --mesh-dot: rgba(169, 148, 156, 0.10);
+}
+
+/* Nord — frost blue on polar night */
+:root[data-theme="nord"] {
+  --bg: #2E3440; --surface: #3B4252; --surface-2: #434C5E;
+  --border: #4C566A; --border-soft: #454f63;
+  --text: #ECEFF4; --muted: #AEB6C5; --faint: #7B8496;
+  --accent: #88C0D0; --accent-strong: #5FA8BD;
+  --accent-contrast: #10262C; --accent-tint: rgba(136, 192, 208, 0.13);
+  --glow: rgba(136, 192, 208, 0.08);
+  --ring: 0 0 0 3px rgba(136, 192, 208, 0.35);
+  --well: rgba(36, 41, 51, 0.55); --divider: rgba(174, 182, 197, 0.25);
+  --mesh-dot: rgba(174, 182, 197, 0.10);
+}
+
+/* Synthwave — hot pink on midnight purple */
+:root[data-theme="synthwave"] {
+  --bg: #16102B; --surface: #221741; --surface-2: #2C1E52;
+  --border: #453473; --border-soft: #382a60;
+  --text: #EFE7FF; --muted: #A697C8; --faint: #776A99;
+  --accent: #F472B6; --accent-strong: #EC4899;
+  --accent-contrast: #38082A; --accent-tint: rgba(244, 114, 182, 0.14);
+  --glow: rgba(244, 114, 182, 0.10);
+  --ring: 0 0 0 3px rgba(244, 114, 182, 0.35);
+  --well: rgba(9, 5, 22, 0.5); --mesh-dot: rgba(166, 151, 200, 0.12);
+}
+
+/* Graphite — monochrome, near-white accent */
+:root[data-theme="graphite"] {
+  --bg: #121316; --surface: #1C1E22; --surface-2: #24272C;
+  --border: #383C44; --border-soft: #2e3238;
+  --text: #E7E9EC; --muted: #9CA1A9; --faint: #6C7079;
+  --accent: #D3D7DE; --accent-strong: #AEB4BE;
+  --accent-contrast: #16181B; --accent-tint: rgba(211, 215, 222, 0.10);
+  --glow: rgba(211, 215, 222, 0.05);
+  --ring: 0 0 0 3px rgba(211, 215, 222, 0.28);
+  --well: rgba(7, 8, 10, 0.45); --mesh-dot: rgba(156, 161, 169, 0.10);
+}
+
+/* Copper — patina teal-on-copper warm dark */
+:root[data-theme="copper"] {
+  --bg: #14100C; --surface: #211A14; --surface-2: #2B221A;
+  --border: #443727; --border-soft: #382d21;
+  --text: #EFE9E0; --muted: #A99E8E; --faint: #786E60;
+  --accent: #2DD4BF; --accent-strong: #14B8A6;
+  --accent-contrast: #042F2A; --accent-tint: rgba(45, 212, 191, 0.12);
+  --glow: rgba(45, 212, 191, 0.07);
+  --ring: 0 0 0 3px rgba(45, 212, 191, 0.35);
+  --well: rgba(9, 7, 5, 0.45); --mesh-dot: rgba(169, 158, 142, 0.10);
+}
+
+/* Paper — the light theme: ink on paper, deep cyan accent */
+:root[data-theme="paper"] {
+  --bg: #EEF2F6; --surface: #FFFFFF; --surface-2: #F1F5F9;
+  --border: #CBD5E1; --border-soft: #DCE4EC;
+  --divider: rgba(51, 65, 85, 0.18);
+  --well: rgba(15, 23, 42, 0.05);
+  --edge-light: rgba(255, 255, 255, 0.9);
+  --text: #0F172A; --muted: #475569; --faint: #94A3B8;
+  --accent: #0891B2; --accent-strong: #0E7490;
+  --accent-contrast: #FFFFFF; --accent-tint: rgba(8, 145, 178, 0.10);
+  --ok: #059669; --warn: #B45309; --danger: #DC2626;
+  --ok-tint: rgba(5, 150, 105, 0.10); --warn-tint: rgba(180, 83, 9, 0.10);
+  --danger-tint: rgba(220, 38, 38, 0.09);
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.08), 0 6px 20px rgba(15, 23, 42, 0.07);
+  --shadow-lg: 0 10px 40px rgba(15, 23, 42, 0.15);
+  --glow: rgba(8, 145, 178, 0.06); --mesh-dot: rgba(71, 85, 105, 0.10);
+  --ring: 0 0 0 3px rgba(8, 145, 178, 0.25);
+}
+
+/* --- theme picker (Settings → Themes) ----------------------------------- */
+.theme-grid {
+  display: grid; gap: var(--sp-4);
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.theme-swatch {
+  border: 2px solid var(--border-soft); border-radius: var(--radius);
+  padding: 0; overflow: hidden; cursor: pointer; text-align: left;
+  background: none; transition: border-color .12s, transform .12s;
+  font: inherit; color: inherit;
+}
+.theme-swatch:hover { border-color: var(--border); transform: translateY(-1px); }
+.theme-swatch--active { border-color: var(--accent); box-shadow: var(--ring); }
+.theme-swatch__preview { height: 64px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.theme-swatch__bar { height: 12px; border-radius: 4px; opacity: .95; }
+.theme-swatch__dots { display: flex; gap: 5px; align-items: center; }
+.theme-swatch__dot { width: 9px; height: 9px; border-radius: 50%; }
+.theme-swatch__name {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 8px 10px; font-size: var(--fs-sm); font-weight: var(--fw-medium);
+  background: var(--surface); border-top: 1px solid var(--border-soft);
+}
