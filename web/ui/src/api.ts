@@ -8,6 +8,8 @@ import type {
   CatalogItem,
   FleetAction,
   FleetResult,
+  FsListResult,
+  FsMkdirResult,
   Info,
   InstallRequest,
   InstallResult,
@@ -298,6 +300,12 @@ export const api = {
       key,
       enabled,
     }),
+
+  fsList: (path: string) =>
+    postJSON<FsListResult>("/api/fs", { do: "list", path }),
+
+  fsMkdir: (path: string) =>
+    postJSON<FsMkdirResult>("/api/fs", { do: "mkdir", path }),
 
   sourceAdd: (name: string, url: string) =>
     postJSON<ShareResult>("/api/sources", { do: "add", name, url }),

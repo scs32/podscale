@@ -53,6 +53,12 @@ export const PodGlyph = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+export const FolderIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+  </svg>
+);
+
 export const SpinnerIcon = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base({ strokeWidth: 2.5, ...p })}>
     <path d="M21 12a9 9 0 1 1-6.2-8.6" />
