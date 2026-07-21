@@ -39,7 +39,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.15.2"
+VERSION = "0.15.3"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -2173,6 +2173,24 @@ def ts_relay_preflight():
             "checked_at": int(time.time())}
 
 
+def _startup_relay_preflight():
+    """Record a first pre-flight verdict on apple-container installs that
+    have none — the platform where DERP fallback is a near-certainty and
+    the auto-grant is designed to engage without a human. Never overwrites
+    an existing verdict (recheck/enable own refreshes)."""
+    if host_platform() != "apple-container":
+        return
+    r = load_relay()
+    if r.get("preflight"):
+        return
+    r["preflight"] = ts_relay_preflight()
+    save_relay(r)
+    pf = r["preflight"]
+    print("relay pre-flight (first boot): "
+          + ("eligible" if pf.get("eligible")
+             else "not eligible: " + "; ".join(pf.get("reasons") or [])))
+
+
 def _relay_downgrade_after_reject(raw, resp):
     """Called from ts_policy_sync when /validate rejected a splice. If the
     relay grant was present AND a relay-free splice of the same policy
@@ -2227,11 +2245,15 @@ def relay_verify():
     Cached into .relay.json; the relay banner clears on peer-relay or
     direct (direct means the problem this feature exists for is absent).
 
-    Doubles as the registry's verification pass: Tailscale has no "list
-    relay-capable nodes" API, so a relay is only PROVEN once traffic is
-    seen flowing through it. Pending registry entries whose IP shows up in
-    PeerRelay graduate to active, and relays we never knew about are
-    discovered into the registry (e.g. the Mac set up by install-mac.sh)."""
+    Doubles as the registry's verification pass. Registry states:
+    - pending: registered, but the device isn't advertising relay
+      capability — the enable command genuinely hasn't been run there.
+    - ready: the device ADVERTISES as a relay server (it appears in the
+      sidecar's `tailscale debug peer-relay-servers`) but no relayed
+      traffic has been seen yet. No command nag — it's already enabled.
+    - active: traffic was seen flowing through it (PeerRelay match).
+    Relays seen carrying traffic that were never registered are
+    auto-discovered in (e.g. the Mac set up by install-mac.sh)."""
     sidecar = f"tailscale-{_controller_name() or 'tailarr'}"
     r = podman("exec", sidecar, "tailscale", "status", "--json", timeout=20)
     seen = set()
@@ -2246,16 +2268,32 @@ def relay_verify():
             v = podman("exec", sidecar, "tailscale", "version", timeout=15)
             if v.returncode == 0 and v.stdout.split():
                 detail = f"sidecar tailscale {v.stdout.split()[0]}"
+    # Who's advertising relay capability right now (debug output — parse
+    # defensively; on failure just don't move anyone between pending and
+    # ready this pass).
+    advertising = None
+    a = podman("exec", sidecar, "tailscale", "debug", "peer-relay-servers",
+               timeout=15)
+    if a.returncode == 0:
+        try:
+            parsed = json.loads(a.stdout or "[]")
+            if isinstance(parsed, list):
+                advertising = {str(x) for x in parsed}
+        except ValueError:
+            pass
     rec = load_relay()
     now = int(time.time())
-    if seen:
-        relays = rec.setdefault("relays", {})
-        for ip in seen:
-            entry = relays.setdefault(
-                ip, {"name": ip, "ip": ip, "added_at": now,
-                     "discovered": True})
-            entry["status"] = "active"
-            entry["verified_at"] = now
+    relays = rec.setdefault("relays", {})
+    for ip in seen:
+        entry = relays.setdefault(
+            ip, {"name": ip, "ip": ip, "added_at": now, "discovered": True})
+        entry["status"] = "active"
+        entry["verified_at"] = now
+    if advertising is not None:
+        for ip, entry in relays.items():
+            if entry.get("status") == "active":
+                continue  # traffic-proven — never demoted by a probe
+            entry["status"] = "ready" if ip in advertising else "pending"
     rec["verified"] = {"state": state, "at": now, "detail": detail}
     save_relay(rec)
     return rec["verified"]
@@ -3542,37 +3580,57 @@ def host_platform():
     return _host_platform_cache
 
 
+# The kernel command line is VM-global and NOT namespaced — readable from
+# inside any container on the VM's kernel. apple/container VMs boot with
+# init=/sbin/vminitd on it. This is THE reliable in-container signal: the
+# original /proc/1/comm check could never work (containers get their own
+# PID namespace, so PID 1 is the container's own command — live-caught
+# 2026-07-21 when a fresh install detected "linux" with pid1=sleep).
+CMDLINE_PATH = "/proc/cmdline"
+
+
+def _cmdline_platform():
+    """apple-container | linux | "" (unreadable) from the kernel cmdline."""
+    try:
+        with open(CMDLINE_PATH) as f:
+            cmdline = f.read()
+    except OSError:
+        return ""
+    return ("apple-container" if "init=/sbin/vminitd" in cmdline
+            else "linux")
+
+
 def _detect_host_platform():
-    """Backfill .host.json on installs bootstrapped before it existed
-    (fresh installs get it from bootstrap-tailarr.sh). --pid=host alone is
-    enough to read the host's /proc/1/comm — deliberately NOT _host_exec:
-    apple/container guests reject nsenter into PID 1 (EPERM), which is the
-    very platform this needs to detect."""
-    if os.path.exists(HOST_FILE):
+    """Write (or CORRECT) .host.json from the kernel command line.
+
+    Runs at every controller start, in-process — no helper container.
+    Correction matters: every v0.13.0–v0.15.2 install has a wrong
+    "linux" verdict on apple/container (the pid1 check saw the
+    container's own init), which silently disabled the whole peer-relay
+    offer there."""
+    detected = _cmdline_platform()
+    if not detected:
+        return  # cmdline unreadable (odd CI sandbox) — keep whatever exists
+    existing = None
+    try:
+        with open(HOST_FILE) as f:
+            existing = json.load(f).get("platform")
+    except (OSError, ValueError):
+        pass
+    if existing == detected:
         return
-    name = _controller_name()
-    if not name:
-        return  # dev/CI — retried on next controller start
-    ins = podman("inspect", name, "--format", "{{.ImageName}}", timeout=30)
-    image = ins.stdout.strip()
-    if ins.returncode != 0 or not image:
-        return
-    r = podman("run", "--rm", "--name", "tailarr-hostinfo",
-               "--pid=host", image, "cat", "/proc/1/comm", timeout=60)
-    if r.returncode != 0 or not r.stdout.strip():
-        return
-    pid1 = r.stdout.strip().splitlines()[0].strip()
     global _host_platform_cache
-    _host_platform_cache = ("apple-container" if pid1 == "vminitd"
-                            else "linux")
+    _host_platform_cache = detected
     tmp = HOST_FILE + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"platform": _host_platform_cache, "pid1": pid1,
-                   "dt_compatible": "", "detected_at": int(time.time()),
-                   "detected_by": "controller"}, f, indent=2)
+        json.dump({"platform": detected,
+                   "detected_at": int(time.time()),
+                   "detected_by": "controller-cmdline",
+                   "corrected_from": existing}, f, indent=2)
     os.replace(tmp, HOST_FILE)
     os.chmod(HOST_FILE, 0o600)
-    print(f"host platform backfilled: {_host_platform_cache} (pid1={pid1})")
+    print(f"host platform {'corrected' if existing else 'detected'}: "
+          f"{detected}" + (f" (was {existing})" if existing else ""))
 
 
 def _sync_mounts_dropin():
@@ -4098,6 +4156,15 @@ def _maintenance_loop():
         render_registry_auth(load_registries())
     except Exception as e:
         print(f"registry authfile render error: {e}")
+    try:
+        # First-boot relay pre-flight (apple-container only): without it,
+        # "auto-emit when eligible" could never fire on a fresh install —
+        # nothing else runs the pre-flight until a user clicks Re-check
+        # (live-caught 2026-07-21: install-mac.sh read an empty verdict).
+        # Runs BEFORE the policy sync so an eligible grant lands in it.
+        _startup_relay_preflight()
+    except Exception as e:
+        print(f"relay pre-flight error: {e}")
     _startup_policy_sync()
     while True:
         try:
@@ -4215,12 +4282,13 @@ if __name__ == "__main__":
     # actions are subprocesses of the stop already in progress anyway.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     print(f"Tailarr web UI on :{PORT} (pods dir: {PODS_DIR})")
+    # Detect/correct the host-platform fact BEFORE anything reads it (it
+    # gates the relay pre-flight below) — a cheap in-process file read
+    # since the cmdline rework, no helper container.
+    _detect_host_platform()
     maybe_check_updates()  # kick a first check if the cache is stale
     threading.Thread(target=_maintenance_loop, daemon=True).start()
     # Existing installs get the mounts drop-in on first start after an
     # upgrade, not only when shares next change.
     threading.Thread(target=_sync_mounts_dropin, daemon=True).start()
-    # ...and the host-platform fact backfilled (fresh installs get it from
-    # the bootstrap; the peer-relay offer depends on it).
-    threading.Thread(target=_detect_host_platform, daemon=True).start()
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

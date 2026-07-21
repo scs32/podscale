@@ -146,9 +146,11 @@ function AddRelayDialog({
                 </Field>
               )}
               <p className="field__hint" style={{ margin: "var(--sp-2) 0 0" }}>
-                A picked device must run{" "}
-                <code>{status.command}</code> once before it can relay —
-                it shows as pending until traffic proves it.
+                A device must run{" "}
+                <code>{status.command}</code> once before it can relay. If
+                it already has (install-mac.sh does this for your Mac), it
+                shows as <strong>ready</strong> right away — otherwise it
+                shows the command until it does.
               </p>
             </>
           )}
@@ -309,12 +311,19 @@ export function RelaySection({
                       >
                         active
                       </span>
+                    ) : r.status === "ready" ? (
+                      <span
+                        className="chip chip--installed"
+                        title="This device advertises relay capability — it engages automatically when a connection needs it"
+                      >
+                        ready
+                      </span>
                     ) : (
                       <span
                         className="chip chip--busy"
-                        title="Waiting to see traffic through this device"
+                        title="This device isn't relay-capable yet — run the command on it once"
                       >
-                        pending — run: {status.command}
+                        not enabled — run: {status.command}
                       </span>
                     )}
                     <button

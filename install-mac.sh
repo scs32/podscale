@@ -131,11 +131,11 @@ else:
     print("[NOTE] The relay grant was NOT auto-enabled. The controller found:")
     for reason in r.get("reasons") or ["(pre-flight has not run yet)"]:
         print("   - " + reason)
-    print("   Review and enable it under Settings -> Peer relay.")
+    print("   Review and enable it under Network -> Peer relay.")
 ' || true
     else
         echo "[NOTE] Could not reach the controller at http://$FQDN:8080 yet;"
-        echo "       check Settings -> Peer relay once the UI is up."
+        echo "       check Network -> Peer relay once the UI is up."
     fi
 fi
 
