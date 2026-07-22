@@ -185,6 +185,8 @@ export const api = {
       url?: string;
       topics?: string[];
       token?: string;
+      user?: string;
+      password?: string;
       status?: NtfyStatus;
     }>("/api/ntfy/alerts", { do: action }),
 

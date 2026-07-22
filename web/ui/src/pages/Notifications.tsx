@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import type { NtfyStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
@@ -26,6 +25,8 @@ export function Notifications() {
     url: string;
     topics: string[];
     token: string;
+    user: string;
+    password: string;
   } | null>(null);
 
   const refresh = useCallback(async () => {
@@ -94,7 +95,13 @@ export function Notifications() {
     try {
       const r = await api.ntfyAlerts("issue");
       if (r.ok && r.url !== undefined) {
-        setHandout({ url: r.url, topics: r.topics ?? [], token: r.token ?? "" });
+        setHandout({
+          url: r.url,
+          topics: r.topics ?? [],
+          token: r.token ?? "",
+          user: r.user ?? "",
+          password: r.password ?? "",
+        });
       } else {
         show({ kind: "err", text: r.error ?? "Could not issue the credential." });
       }
@@ -155,27 +162,22 @@ export function Notifications() {
       <div className="section-title">Notifications</div>
       <FlashView flash={flash} onClose={clear} />
 
-      {status && !status.installed && (
+      {status && !status.configured && (
         <div className="card panel">
           <p className="field__hint">
-            Tailarr sends update, health, and lifecycle alerts through{" "}
-            <strong>ntfy</strong>, a small notification server that runs as
-            a managed system pod — invisible to user devices, locked to
+            Tailarr sends update, health, and lifecycle alerts through a
+            small notification server it runs and manages itself — never
+            listed with your pods, invisible to user devices, locked to
             deny-all, controlled only from this page.
+            {status.installed
+              ? ` (The service is deployed — ${status.state || "state unknown"} — but not yet configured.)`
+              : ""}
           </p>
-          <Link className="btn btn--primary" to="/install/ntfy">
-            Install ntfy
-          </Link>
-        </div>
-      )}
-
-      {status && status.installed && !status.configured && (
-        <div className="card panel">
           <p className="field__hint">
-            The ntfy pod is deployed ({status.state || "state unknown"}).
-            One click writes its server config (authentication on, deny-all
-            access), creates the accounts Tailarr publishes with, and opens
-            the token-protected public endpoint for phone delivery.
+            One click {status.installed ? "writes" : "deploys it, writes"}{" "}
+            its server config (authentication on, deny-all access), creates
+            the accounts Tailarr publishes with, and opens the
+            token-protected public endpoint for phone delivery.
           </p>
           <button
             className="btn btn--primary"
@@ -316,9 +318,18 @@ export function Notifications() {
                     </div>
                   </div>
                   <div>
+                    <div className="row__title">Username / password</div>
+                    <div className="row__meta">
+                      <code>{handout.user}</code> / <code>{handout.password}</code>
+                      {" "}— what the iOS ntfy app asks for when subscribing
+                      to a protected topic.
+                    </div>
+                  </div>
+                  <div>
                     <div className="row__title">Access token</div>
                     <div className="row__meta">
-                      <code>{handout.token}</code>
+                      <code>{handout.token}</code> — same account, for the
+                      Android/web ntfy apps and the Tailarr app.
                     </div>
                   </div>
                   <div>
@@ -336,8 +347,9 @@ export function Notifications() {
                 </div>
                 <p className="field__hint" style={{ marginTop: "var(--sp-3)" }}>
                   In the ntfy app: add a subscription → “Use another server”
-                  with the server and topic above, then add the access token
-                  for that server under Settings → Manage users.
+                  with the server and topic above. iOS prompts for the
+                  username and password; on Android/web you can instead add
+                  the access token under Settings → Manage users.
                 </p>
               </>
             ) : null}

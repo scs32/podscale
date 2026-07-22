@@ -23,7 +23,9 @@ export function Dashboard() {
 
   const refresh = useCallback(async () => {
     try {
-      setPods(await api.pods());
+      // System pods (ntfy) are infrastructure: managed from their own
+      // feature page, never shown as deployed pods.
+      setPods((await api.pods()).filter((p) => !p.system));
       setError("");
     } catch (e) {
       setError(String(e));

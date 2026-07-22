@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.18.3"
+VERSION = "0.18.4"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -2690,6 +2690,11 @@ def status_catalog():
     ps = ps_all() if deployed else {}
     out = []
     for name, spec in sorted(merged.items()):
+        # System-pod entries (ntfy) never appear in the catalog: their
+        # feature page installs and manages them (single control
+        # surface). resolve_service still finds them for that path.
+        if spec.get("system"):
+            continue
         installed = name in deployed
         out.append({
             "name": name,
@@ -3276,6 +3281,12 @@ def op_fleet(action):
     for name in deployed_services():
         if name in CONTROLLER_PODS:
             continue
+        # System pods are infrastructure like the controller: fleet
+        # stop/start/restart leaves them alone (notifications must
+        # survive "Stop all"). Rerender still includes them — they need
+        # engine updates like everything else.
+        if action != "rerender" and _is_system(name):
+            continue
         # Skip no-ops so cards don't flash busy for nothing: a fully-down
         # pod has nothing to stop (stop.sh covers the sidecar too), and a
         # running pod needs no start.
@@ -3654,6 +3665,7 @@ def status_monitor():
          "dns_name": e["dns_name"], "url": service_url(e), "monitored": False}
         for e in entries
         if e["tailscale"] and e["name"] != kuma_pod and not e["controller"]
+        and not e["system"]  # system pods: ops health alerts cover them
     ]
     out = {
         "available": kuma is not None,
@@ -3884,9 +3896,34 @@ def op_ntfy_setup(_data):
     single control surface for everything ntfy."""
     entry = _discover_ntfy(fresh=True)
     if not entry:
-        return {"ok": False,
-                "error": "No ntfy pod found — install ntfy from the "
-                         "catalog first."}
+        # ntfy is hidden from the catalog (single control surface): the
+        # setup button IS the install path. Defaults mirror the catalog
+        # entry exactly like a catalog install would.
+        spec = resolve_service("ntfy")
+        if not spec:
+            return {"ok": False,
+                    "error": "The ntfy catalog entry is missing."}
+        inst = op_install({
+            "name": "ntfy", "custom": False,
+            "image": spec["image"], "command": spec.get("command", ""),
+            "ports": spec.get("ports", {}),
+            "environment": spec.get("environment", {}),
+            "volumes": {cpath: os.path.join(PODS_DIR, "ntfy",
+                                            cpath.lstrip("/"))
+                        for _, cpath in spec.get("volumes", {}).items()},
+            "restart_policy": spec.get("restart_policy", "unless-stopped"),
+            "shares": [], "authkey": "",
+            "config_file": "", "config_set": {},
+        })
+        if not inst["ok"]:
+            return {"ok": False,
+                    "error": inst.get("error")
+                    or "ntfy install failed — see output.",
+                    "output": inst.get("output", "")}
+        entry = _discover_ntfy(fresh=True)
+        if not entry:
+            return {"ok": False,
+                    "error": "ntfy installed but was not found afterwards."}
     name = entry["name"]
     info = pod_config(name) or {}
     conf_dir = (info.get("volumes") or {}).get("/etc/ntfy", "")
@@ -3945,6 +3982,26 @@ def op_ntfy_setup(_data):
         if not fr["ok"]:
             funnel_error = fr.get("error") or "funnel enable failed"
     entry = _discover_ntfy(fresh=True)  # IP may differ after the restart
+    # Late base-url converge: on a first-ever setup the sidecar hadn't
+    # enrolled when server.yml was written, so base-url (iOS push +
+    # attachments need it) was missing — once the DNS name is known,
+    # rewrite and bounce the pod one more time. No-op on re-runs.
+    if entry and entry.get("dns_name"):
+        yml2 = _ntfy_server_yml(entry["dns_name"])
+        try:
+            with open(yml_path) as f:
+                stale = f.read() != yml2
+        except OSError:
+            stale = True
+        if stale:
+            try:
+                with open(yml_path + ".tmp", "w") as f:
+                    f.write(yml2)
+                os.replace(yml_path + ".tmp", yml_path)
+                op_action(name, "start")
+                entry = _discover_ntfy(fresh=True)
+            except OSError:
+                pass  # next setup run converges it
     test_err = ntfy_client.publish(
         conf, _ntfy_internal_url(entry), ntfy_client.OPS_TOPIC,
         "Tailarr", "Notifications are set up.")
@@ -4008,6 +4065,14 @@ def op_ntfy_alerts(data):
         if r.returncode != 0 and "exists" not in (r.stdout + r.stderr):
             return {"ok": False, "error": ("could not create the alerts "
                     "account: " + (r.stdout + r.stderr).strip()[-200:])}
+    elif not saved.get("password"):
+        # Account exists but the registry lost its password (restored
+        # backup): reset it so what the card displays is always true.
+        r = _ntfy_cli(pod, "user", "change-pass", user,
+                      env={"NTFY_PASSWORD": password})
+        if r.returncode != 0:
+            return {"ok": False, "error": ("could not reset the alerts "
+                    "password: " + (r.stdout + r.stderr).strip()[-200:])}
     r = _ntfy_cli(pod, "access", user, "tlr-*", "read")
     if r.returncode != 0:
         return {"ok": False, "error": ("could not grant read access: "
@@ -4024,8 +4089,12 @@ def op_ntfy_alerts(data):
     ntfy_client.save_conf(conf)
     url = conf.get("public_url") or (f"https://{entry['dns_name']}"
                                      if entry.get("dns_name") else "")
+    # user+password ride along because the iOS ntfy app only supports
+    # basic auth for protected servers (tokens are Android/web/CLI);
+    # both credentials are the same read-only account.
     return {"ok": True, "error": None, "url": url,
             "topics": [ntfy_client.OPS_TOPIC], "token": token,
+            "user": user, "password": password,
             "status": status_ntfy()}
 
 

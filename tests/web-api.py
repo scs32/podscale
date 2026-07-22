@@ -1647,6 +1647,8 @@ try:
           and data["topics"] == ["tlr-ops"]
           and data["status"]["alerts_issued"] is True,
           "alerts issue mints a read credential and flags status")
+    check(data["user"] == "tailarr-alerts" and len(data["password"]) >= 20,
+          "issue returns user+password too (iOS ntfy app lacks token auth)")
     check("tailarr-alerts" in nfake.users
           and any("access" in c and "tailarr-alerts" in c and "read" in c
                   for c in nfake.calls),
@@ -1665,6 +1667,36 @@ try:
           "revoke deletes the ntfy account and clears the registry")
 finally:
     app.podman = _real_ntfy_podman
+
+# --- system pods are invisible everywhere but their feature page ----------
+code, data = get("/api/catalog")
+_cat_names = {c["name"] for c in data["catalog"]}
+check("ntfy" not in _cat_names and "sonarr" in _cat_names,
+      "system pods never appear in the catalog")
+code, data = post("/api/fleet", {"do": "restart"})
+_fleet_names = ({r["name"] for r in data["results"]}
+                | {s["name"] for s in data["skipped"]})
+check("ntfy" not in _fleet_names and "apitest" in _fleet_names,
+      "fleet start/stop/restart leaves system pods alone")
+
+# With no ntfy pod deployed, setup INSTALLS it from the hidden entry.
+_inst_calls = []
+_real_discover = app._discover_ntfy
+_real_op_install = app.op_install
+app._discover_ntfy = lambda fresh=False: None
+app.op_install = (lambda req: (_inst_calls.append(req)
+                               or {"ok": False, "error": "no auth key",
+                                   "output": ""}))
+try:
+    code, data = post("/api/ntfy/setup", {})
+    check(code == 400 and data["error"] == "no auth key"
+          and _inst_calls and _inst_calls[0]["name"] == "ntfy"
+          and _inst_calls[0]["custom"] is False
+          and "binwiederhier/ntfy" in _inst_calls[0]["image"],
+          "setup auto-installs ntfy from the hidden catalog entry")
+finally:
+    app._discover_ntfy = _real_discover
+    app.op_install = _real_op_install
 
 # --- ops notifications: transition-edge de-dup + health debounce ----------
 _notes = []
