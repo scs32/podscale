@@ -25,7 +25,9 @@ export function Network() {
 
   const refresh = useCallback(async () => {
     try {
-      setEntries(await api.network());
+      // System pods (ntfy) are configured from their own page — their
+      // networking (incl. funnel) is feature-managed, not per-pod knobs.
+      setEntries((await api.network()).filter((e) => !e.system));
     } catch (e) {
       show({ kind: "err", text: String(e) });
     }

@@ -117,11 +117,13 @@ export function PodCard({
         </button>
         <button
           className="btn btn--ghost btn--sm"
-          disabled={locked || pod.controller}
+          disabled={locked || pod.controller || pod.system}
           title={
             pod.controller
               ? "The controller can't reconfigure itself"
-              : "Edit config, then reload or update"
+              : pod.system
+                ? "Tailarr manages this pod — configure it from the Notifications page"
+                : "Edit config, then reload or update"
           }
           onClick={() => onEdit(pod.name)}
         >
