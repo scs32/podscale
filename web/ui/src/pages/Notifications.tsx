@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import type { NtfyStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
@@ -163,27 +162,22 @@ export function Notifications() {
       <div className="section-title">Notifications</div>
       <FlashView flash={flash} onClose={clear} />
 
-      {status && !status.installed && (
+      {status && !status.configured && (
         <div className="card panel">
           <p className="field__hint">
-            Tailarr sends update, health, and lifecycle alerts through{" "}
-            <strong>ntfy</strong>, a small notification server that runs as
-            a managed system pod — invisible to user devices, locked to
+            Tailarr sends update, health, and lifecycle alerts through a
+            small notification server it runs and manages itself — never
+            listed with your pods, invisible to user devices, locked to
             deny-all, controlled only from this page.
+            {status.installed
+              ? ` (The service is deployed — ${status.state || "state unknown"} — but not yet configured.)`
+              : ""}
           </p>
-          <Link className="btn btn--primary" to="/install/ntfy">
-            Install ntfy
-          </Link>
-        </div>
-      )}
-
-      {status && status.installed && !status.configured && (
-        <div className="card panel">
           <p className="field__hint">
-            The ntfy pod is deployed ({status.state || "state unknown"}).
-            One click writes its server config (authentication on, deny-all
-            access), creates the accounts Tailarr publishes with, and opens
-            the token-protected public endpoint for phone delivery.
+            One click {status.installed ? "writes" : "deploys it, writes"}{" "}
+            its server config (authentication on, deny-all access), creates
+            the accounts Tailarr publishes with, and opens the
+            token-protected public endpoint for phone delivery.
           </p>
           <button
             className="btn btn--primary"
