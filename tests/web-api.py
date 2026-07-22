@@ -1791,6 +1791,106 @@ try:
 finally:
     app._run_action = _real_run_action2
 
+# --- people: first-class users (identity-carrying keys) -------------------
+_real_ppl_tok = app._ts_token
+_real_ppl_api = app.ts_api
+_real_ppl_sync = app.ts_policy_sync
+_keys_minted = []
+_fake_devices = {"devices": []}
+
+
+def _fake_people_api(method, path, body=None):
+    if method == "POST" and path == "/tailnet/-/keys":
+        _keys_minted.append(body)
+        return 200, {"key": "dummy-test-authkey-person"}
+    if method == "GET" and path == "/tailnet/-/devices":
+        return 200, _fake_devices
+    if method == "GET" and path.startswith("/device/"):
+        nid = path.split("/")[2]
+        for d in _fake_devices["devices"]:
+            if d["nodeId"] == nid:
+                return 200, d
+        return 404, "no such device"
+    if method == "POST" and path.endswith("/tags"):
+        nid = path.split("/")[2]
+        for d in _fake_devices["devices"]:
+            if d["nodeId"] == nid:
+                d["tags"] = body["tags"]
+                return 200, {}
+        return 404, "no such device"
+    return 200, {}
+
+
+app._ts_token = lambda: "dummy-test-token"
+app.ts_api = _fake_people_api
+app.ts_policy_sync = lambda: {"ok": True, "changed": False, "error": None}
+try:
+    code, data = post("/api/people", {"do": "add", "name": "Dave"})
+    check(code == 200 and data["ok"]
+          and data["key"] == "dummy-test-authkey-person", "add user mints a key")
+    uid = data["id"]
+    tags = _keys_minted[-1]["capabilities"]["devices"]["create"]["tags"]
+    check(sorted(tags) == sorted(["tag:tailarr-user", f"tag:tailarr-u-{uid}"]),
+          "fresh user's key carries identity tags and no badges")
+    secs = app._managed_sections()
+    check(any(f"tag:tailarr-u-{uid}" in ln for ln in secs["tagowners"]),
+          "person tag enters the fenced tagOwners")
+    check(app._grants_minimality_ok(secs["grants"])
+          and app._sections_prefix_ok(secs),
+          "person tags keep both policy invariants green")
+    check(not app._grants_minimality_ok(
+        [f'{{"src": ["tag:tailarr-u-{uid}"], "dst": ["tag:tailarr"], '
+         '"ip": ["*"]}},']),
+        "a grant referencing a person tag is rejected (identity-only)")
+
+    # a device enrolls with the key -> owned; badge flip fans out
+    _fake_devices["devices"].append(
+        {"nodeId": "pdev1", "hostname": "daves-phone", "os": "iOS",
+         "tags": ["tag:tailarr-user", f"tag:tailarr-u-{uid}"]})
+    code, data = post(f"/api/people/{uid}/access",
+                      {"service": "apitest", "allow": True})
+    check(code == 200 and data["ok"]
+          and "tag:tailarr-can-apitest" in _fake_devices["devices"][0]["tags"],
+          "per-user badge flip reaches every owned device")
+    code, data = post("/api/people", {"do": "reissue", "id": uid})
+    tags = _keys_minted[-1]["capabilities"]["devices"]["create"]["tags"]
+    check(code == 200 and "tag:tailarr-can-apitest" in tags,
+          "reissued key carries the user's current badges")
+
+    # grouping: owned devices sit under the person, not in unassigned
+    _fake_devices["devices"].append(
+        {"nodeId": "udev2", "hostname": "orphan", "os": "tvOS",
+         "tags": ["tag:tailarr-user"]})
+    code, data = get("/api/users")
+    person = next(p for p in data["people"] if p["id"] == uid)
+    check([d["id"] for d in person["devices"]] == ["pdev1"]
+          and [u["id"] for u in data["users"]] == ["udev2"],
+          "devices group under their person; anonymous ones stay unassigned")
+
+    code, data = post("/api/people", {"do": "assign", "id": uid,
+                                      "node": "udev2"})
+    d2 = _fake_devices["devices"][1]
+    check(code == 200 and f"tag:tailarr-u-{uid}" in d2["tags"]
+          and "tag:tailarr-can-apitest" in d2["tags"],
+          "assigning a machine adds the identity tag and the user's badges")
+
+    # reconcile self-heals a device that drifted from its person's badges
+    d2["tags"] = ["tag:tailarr-user", f"tag:tailarr-u-{uid}"]
+    app.ts_reconcile_people()
+    check("tag:tailarr-can-apitest" in d2["tags"],
+          "reconcile re-applies the person's badges to drifted devices")
+
+    code, data = post("/api/people", {"do": "delete", "id": uid})
+    check(code == 200 and data["ok"] and uid not in app.load_people()
+          and not any(t.startswith("tag:tailarr-u-")
+                      or t.startswith("tag:tailarr-can-")
+                      for d in _fake_devices["devices"] for t in d["tags"]),
+          "delete strips identity + badges from every owned device")
+finally:
+    app._ts_token = _real_ppl_tok
+    app.ts_api = _real_ppl_api
+    app.ts_policy_sync = _real_ppl_sync
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")
