@@ -190,10 +190,21 @@ export interface UserMachine {
   can: string[]; // services this machine may reach
 }
 
+// A first-class user (person): owns devices via tag:tailarr-u-<id>,
+// badges apply to all of them, keys reissue against the same identity.
+export interface Person {
+  id: string;
+  name: string;
+  badges: string[]; // per-user access switches (services)
+  created: number;
+  devices: UserMachine[];
+}
+
 export interface UsersStatus {
   configured: boolean; // API token present on the controller
   error: string | null;
-  users: UserMachine[];
+  people: Person[];
+  users: UserMachine[]; // unassigned machines (legacy keys / adopt)
   // Grantable services: deployed non-controller pods plus the "server"
   // pseudo-service (the controller itself, for the app's server module).
   services: string[];

@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.18.4"
+VERSION = "0.19.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -1024,6 +1024,14 @@ TSAPI_FILE = os.path.join(PODS_DIR, ".tsapi.json")
 USERS_FILE = os.path.join(PODS_DIR, ".users.json")
 TS_USER_TAG = "tag:tailarr-user"
 TS_CAN_PREFIX = "tag:tailarr-can-"
+# First-class PEOPLE (v0.19.0): a person is an entity in .people.json
+# whose enrollment keys carry tag:tailarr-u-<uid> — attribution rides
+# the key's tags (acl-design §2), so devices are born owned and a
+# reissued key ties the new device back automatically. u- tags are
+# IDENTITY-ONLY: they enter the fenced tagOwners but may NEVER appear
+# in a grant (netmap minimality treats them as user-wearable).
+PEOPLE_FILE = os.path.join(PODS_DIR, ".people.json")
+TS_PERSON_PREFIX = "tag:tailarr-u-"
 # Pseudo-service granting the controller itself (the app's server module).
 # tag:tailarr-can-server's grant dst is tag:tailarr-ctrl, not a svc- tag;
 # the API's bearer-token auth is the real permission boundary behind it.
@@ -1165,22 +1173,30 @@ def _shareable_services():
 
 
 def status_users():
-    """User machines (tag:tailarr-user) + their capability badges."""
+    """People (first-class users, each with their devices) plus
+    unassigned user machines (enrolled without a person tag)."""
     services = _shareable_services() + [SERVER_SERVICE]
+    people = load_people()
+    people_out = [{"id": uid, "name": p.get("name", uid),
+                   "badges": sorted(p.get("badges") or []),
+                   "created": p.get("created", 0), "devices": []}
+                  for uid, p in people.items()]
+    people_out.sort(key=lambda p: p["name"].lower())
+    by_uid = {p["id"]: p for p in people_out}
     if not _ts_token():
         return {"configured": False, "error": None, "users": [],
-                "services": services}
+                "people": people_out, "services": services}
     code, data = ts_api("GET", "/tailnet/-/devices")
     if code != 200:
         return {"configured": True, "error": f"devices API: {data}",
-                "users": [], "services": services}
+                "users": [], "people": people_out, "services": services}
     nicks = load_user_nicks()
     users = []
     for d in data.get("devices", []):
         tags = d.get("tags") or []
         if TS_USER_TAG not in tags:
             continue
-        users.append({
+        entry = {
             "id": d.get("nodeId", ""),
             "hostname": d.get("hostname", ""),
             "nickname": nicks.get(d.get("nodeId", ""), ""),
@@ -1189,10 +1205,18 @@ def status_users():
             "ip": next((a for a in d.get("addresses", []) if "." in a), ""),
             "can": sorted(t[len(TS_CAN_PREFIX):] for t in tags
                           if t.startswith(TS_CAN_PREFIX)),
-        })
+        }
+        uid = next((t[len(TS_PERSON_PREFIX):] for t in tags
+                    if t.startswith(TS_PERSON_PREFIX)), None)
+        if uid in by_uid:
+            by_uid[uid]["devices"].append(entry)
+        else:
+            users.append(entry)  # unassigned (or orphaned person tag)
     users.sort(key=lambda u: (u["nickname"] or u["hostname"]).lower())
+    for p in people_out:
+        p["devices"].sort(key=lambda u: u["hostname"].lower())
     return {"configured": True, "error": None, "users": users,
-            "services": services}
+            "people": people_out, "services": services}
 
 
 def op_user_nick(node_id, nickname):
@@ -1278,6 +1302,212 @@ def op_user_adopt(node_id):
 
 
 # =========================================================================
+# People — first-class users (v0.19.0). See the PEOPLE_FILE note above.
+# =========================================================================
+def load_people():
+    try:
+        with open(PEOPLE_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_people(data):
+    tmp = PEOPLE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, PEOPLE_FILE)
+
+
+def _person_tag(uid):
+    return TS_PERSON_PREFIX + uid
+
+
+def _person_badge_tags(person):
+    """The can- tags a person's badges resolve to RIGHT NOW — only ones
+    that exist in the policy's tagOwners (deployed services + server),
+    so a stale badge can never wedge a key mint or a tag write."""
+    valid = set(_shareable_services()) | {SERVER_SERVICE}
+    return [TS_CAN_PREFIX + s for s in sorted(person.get("badges") or [])
+            if s in valid]
+
+
+def ts_mint_person_key(uid, person):
+    """Mint a single-use, preauthorized enrollment key for a person.
+
+    Tags = tag:tailarr-user + tag:tailarr-u-<uid> + their current can-
+    badges (DECIDED: keys carry badges, so a new device has its access
+    the moment it joins). The u- tag must already be in the fenced
+    tagOwners — op_person syncs the policy before minting (the same
+    policy-before-mint ordering the bootstrap uses)."""
+    if not _ts_token():
+        return {"ok": False, "error": "no API token configured", "key": ""}
+    tags = [TS_USER_TAG, _person_tag(uid)] + _person_badge_tags(person)
+    code, resp = ts_api("POST", "/tailnet/-/keys", {
+        "capabilities": {"devices": {"create": {
+            "reusable": False, "ephemeral": False, "preauthorized": True,
+            "tags": tags}}},
+        "expirySeconds": 86400,
+        "description": f"tailarr user {person.get('name', uid)}",
+    })
+    if code != 200:
+        return {"ok": False, "error": f"keys API: {resp}", "key": ""}
+    return {"ok": True, "error": None, "key": resp.get("key", "")}
+
+
+def _person_device_tags(device_tags, person):
+    """The tag set a person's device SHOULD wear: keep every non-badge
+    tag it already has (user tag, u- tag, public, anything foreign),
+    replace the can- set with exactly the person's badges."""
+    keep = [t for t in device_tags if not t.startswith(TS_CAN_PREFIX)]
+    return sorted(set(keep) | set(_person_badge_tags(person)))
+
+
+def op_person(data):
+    """POST /api/people {do: add|rename|reissue|delete|assign, ...}.
+
+    add: create the person, splice their u- tag into the fenced
+    tagOwners (policy-before-mint), mint their enrollment key.
+    reissue: a fresh key with the same u- tag + current badges — the
+    new device ties back to the person automatically.
+    assign: attach an already-enrolled user machine to a person (adds
+    the u- tag and aligns badges).
+    delete: remove the person; their devices lose the u- tag and all
+    badges (they fall back to plain unassigned user machines)."""
+    do = (data.get("do") or "").strip()
+    people = load_people()
+    if do == "add":
+        name = (data.get("name") or "").strip()[:60]
+        if not name:
+            return {"ok": False, "error": "A name is required."}
+        uid = secrets.token_hex(4)
+        people[uid] = {"name": name, "created": int(time.time()),
+                       "badges": []}
+        save_people(people)
+        if not _ts_token():
+            return {"ok": True, "id": uid, "key": "",
+                    "error": "Created — but no API credential, so no key "
+                             "was minted. Configure Settings and reissue."}
+        sync = ts_policy_sync()  # u- tagOwner must land before the mint
+        if not sync["ok"]:
+            return {"ok": True, "id": uid, "key": "",
+                    "error": f"Created, but the policy sync failed "
+                             f"({sync['error']}) — reissue once fixed."}
+        mint = ts_mint_person_key(uid, people[uid])
+        return {"ok": True, "id": uid, "key": mint.get("key", ""),
+                "error": mint.get("error")}
+    uid = (data.get("id") or "").strip()
+    if uid not in people:
+        return {"ok": False, "error": "Unknown user."}
+    if do == "rename":
+        name = (data.get("name") or "").strip()[:60]
+        if not name:
+            return {"ok": False, "error": "A name is required."}
+        people[uid]["name"] = name
+        save_people(people)
+        return {"ok": True, "id": uid, "error": None}
+    if do == "reissue":
+        mint = ts_mint_person_key(uid, people[uid])
+        return {"ok": mint["ok"], "id": uid, "key": mint.get("key", ""),
+                "error": mint.get("error")}
+    if do == "assign":
+        node = (data.get("node") or "").strip()
+        code, dev = ts_api("GET", f"/device/{node}")
+        if code != 200:
+            return {"ok": False, "error": f"device API: {dev}"}
+        tags = dev.get("tags") or []
+        if TS_USER_TAG not in tags:
+            return {"ok": False, "error": "Not a tailarr user machine."}
+        if any(t.startswith(TS_PERSON_PREFIX) for t in tags):
+            return {"ok": False, "error": "Already assigned to a user."}
+        new = _person_device_tags(tags + [_person_tag(uid)], people[uid])
+        code, resp = ts_api("POST", f"/device/{node}/tags", {"tags": new})
+        if code != 200:
+            return {"ok": False, "error": f"tags API: {resp}"}
+        return {"ok": True, "id": uid, "error": None}
+    if do == "delete":
+        person = people.pop(uid)
+        save_people(people)
+        errors = []
+        code, data_ = ts_api("GET", "/tailnet/-/devices")
+        if code == 200:
+            for d in data_.get("devices", []):
+                tags = d.get("tags") or []
+                if _person_tag(uid) not in tags:
+                    continue
+                new = sorted(t for t in tags
+                             if t != _person_tag(uid)
+                             and not t.startswith(TS_CAN_PREFIX))
+                code2, resp = ts_api(
+                    "POST", f"/device/{d['nodeId']}/tags", {"tags": new})
+                if code2 != 200:
+                    errors.append(f"{d.get('hostname', '?')}: {resp}")
+        if _ts_token():
+            ts_policy_sync()  # drops the u- tagOwner line
+        return {"ok": True, "id": uid,
+                "error": ("; ".join(errors)[:300] or None),
+                "name": person.get("name", "")}
+    return {"ok": False, "error": f"unknown do '{do}'"}
+
+
+def op_person_access(uid, service, allow):
+    """Flip a service badge for a PERSON: update the registry, then fan
+    the can- tag out to every device they own (the per-user model —
+    devices inherit the person's access). The reconcile pass covers
+    devices that enroll later."""
+    people = load_people()
+    if uid not in people:
+        return {"ok": False, "id": uid, "error": "Unknown user."}
+    if service not in _shareable_services() + [SERVER_SERVICE]:
+        return {"ok": False, "id": uid, "error": "Unknown service."}
+    badges = set(people[uid].get("badges") or [])
+    (badges.add if allow else badges.discard)(service)
+    people[uid]["badges"] = sorted(badges)
+    save_people(people)
+    errors = []
+    code, data = ts_api("GET", "/tailnet/-/devices")
+    if code != 200:
+        return {"ok": True, "id": uid,
+                "error": f"saved, but devices API failed: {data}"}
+    for d in data.get("devices", []):
+        tags = d.get("tags") or []
+        if _person_tag(uid) not in tags:
+            continue
+        new = _person_device_tags(tags, people[uid])
+        if new == sorted(tags):
+            continue
+        code2, resp = ts_api("POST", f"/device/{d['nodeId']}/tags",
+                             {"tags": new})
+        if code2 != 200:
+            errors.append(f"{d.get('hostname', '?')}: {resp}")
+    return {"ok": True, "id": uid,
+            "error": ("; ".join(errors)[:300] or None)}
+
+
+def ts_reconcile_people():
+    """Assert every person's devices wear exactly their badges (plus
+    whatever non-badge tags they already carry). Covers devices that
+    enrolled with an older key, missed flips, and hand-edited tags.
+    Quiet best-effort, like ts_reconcile_tags."""
+    people = load_people()
+    if not people or not _ts_token():
+        return
+    code, data = ts_api("GET", "/tailnet/-/devices")
+    if code != 200:
+        return
+    for d in data.get("devices", []):
+        tags = d.get("tags") or []
+        uid = next((t[len(TS_PERSON_PREFIX):] for t in tags
+                    if t.startswith(TS_PERSON_PREFIX)), None)
+        if uid is None or uid not in people:
+            continue
+        new = _person_device_tags(tags, people[uid])
+        if new != sorted(tags):
+            ts_api("POST", f"/device/{d['nodeId']}/tags", {"tags": new})
+
+
+# =========================================================================
 # Tailnet policy sync — the fenced-grant generator (docs/acl-design.md §4)
 #
 # Tailarr owns three labeled fenced regions of the tailnet policy file
@@ -1356,6 +1586,12 @@ def _managed_sections(relay_dst=None):
         owners.append(f'"tag:tailarr-svc-{s}": {OWN},')
     for s in svcs:
         owners.append(f'"tag:tailarr-can-{s}": {OWN},')
+    # Person identity tags: tagOwners ONLY, never a grant — they mark
+    # which person owns a device (netmap minimality treats them as
+    # user-wearable, so a grant referencing one fails the sync).
+    for uid in sorted(load_people()):
+        if re.fullmatch(r"[a-f0-9]+", uid):
+            owners.append(f'"{TS_PERSON_PREFIX}{uid}": {OWN},')
     # Peer relay: see _relay_sections. The cap grants RELAYING only, never
     # network access; BOTH ends of a connection need it.
     relay_grants, relay_owners = _relay_sections(relay_dst)
@@ -1480,7 +1716,8 @@ def _grants_minimality_ok(grant_lines):
     Anything else — user tags bundled into a broad src, a catch-all dst,
     a rule targeting user devices — fails the whole sync."""
     def wearable(name):
-        return name == TS_USER_TAG or name.startswith(TS_CAN_PREFIX)
+        return (name == TS_USER_TAG or name.startswith(TS_CAN_PREFIX)
+                or name.startswith(TS_PERSON_PREFIX))
     try:
         for ln in grant_lines:
             g = _grant_obj(ln)
@@ -4794,6 +5031,17 @@ def api_post(path, data):
         result = op_user_key()
         return (200 if result["ok"] else 400), result
 
+    if path == "/api/people":
+        result = op_person(data)
+        return (200 if result["ok"] else 400), result
+
+    m = re.fullmatch(r"/api/people/([a-f0-9]+)/access", path)
+    if m:
+        result = op_person_access(m.group(1),
+                                  (data.get("service") or "").strip(),
+                                  bool(data.get("allow")))
+        return (200 if result["ok"] else 400), result
+
     if path == "/api/tokens":
         do = data.get("do") or ""
         if do == "create":
@@ -5030,6 +5278,12 @@ def _maintenance_loop():
             ts_reconcile_tags()
         except Exception as e:
             print(f"tag reconcile error: {e}")
+        try:
+            # Devices inherit their person's badges — assert it (covers
+            # devices enrolled with an older key + missed flips).
+            ts_reconcile_people()
+        except Exception as e:
+            print(f"people reconcile error: {e}")
         try:
             # Relay-in-use is invisible from health checks (DERP still
             # "works", just slowly) — reclassify periodically so the

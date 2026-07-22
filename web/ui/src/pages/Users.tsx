@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import type { UsersStatus } from "../types";
+import type { UserMachine, UsersStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
 import { ChipPicker } from "../components/ChipPicker";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FlashView, useFlash } from "../components/Flash";
 import { Field } from "../components/Form";
 import { SpinnerIcon } from "../components/Icons";
@@ -17,58 +18,26 @@ function ago(iso: string): string {
   return `${Math.floor(mins / 1440)}d ago`;
 }
 
-// User machines: devices enrolled with a tailarr-user auth key. Each machine
-// can reach exactly the services it holds a capability badge for — checkboxes
-// here flip tag:tailarr-can-<svc> on the device via the Tailscale API. No
-// policy-file changes, effective in seconds. See docs/acl-design.md.
+// Users are PEOPLE: adding one mints an enrollment key carrying their
+// identity tag (tag:tailarr-u-<id>) plus their current badges, so any
+// device that logs in with it belongs to them — and inherits their
+// access — automatically. Reissue = same person, new device. Badges are
+// per-user: a switch applies to all their devices (a reconcile pass
+// covers late-enrolling ones). Machines enrolled with old anonymous keys
+// appear under "Unassigned" until attached to a person.
 export function Users() {
   const [status, setStatus] = useState<UsersStatus | null>(null);
-  const [busyKey, setBusyKey] = useState(""); // "<id>:<svc>" or "<id>:nick"
-  const [nickEdit, setNickEdit] = useState<{ id: string; value: string } | null>(null);
-  const [minting, setMinting] = useState(false);
-  const [mintedKey, setMintedKey] = useState("");
+  const [busyKey, setBusyKey] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [addName, setAddName] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
+  const [key, setKey] = useState<{ who: string; key: string } | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+  const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null);
   const [adoptOpen, setAdoptOpen] = useState(false);
   const [adoptId, setAdoptId] = useState("");
   const [adopting, setAdopting] = useState(false);
   const { flash, show, clear } = useFlash();
-
-  async function mintKey() {
-    setMinting(true);
-    setMintedKey("");
-    try {
-      const r = await api.userKey();
-      if (r.ok && r.key) setMintedKey(r.key);
-      else show({ kind: "err", text: r.error ?? "Couldn't mint a key." });
-    } catch (e) {
-      show({ kind: "err", text: String(e) });
-    } finally {
-      setMinting(false);
-    }
-  }
-
-  async function adopt() {
-    const id = adoptId.trim();
-    if (!id || adopting) return;
-    setAdopting(true);
-    try {
-      const r = await api.userAdopt(id);
-      if (r.ok) {
-        show({
-          kind: "ok",
-          text: `${r.hostname || id} is now a user machine — grant it services below.`,
-        });
-        setAdoptOpen(false);
-        setAdoptId("");
-        await refresh();
-      } else {
-        show({ kind: "err", text: r.error ?? "Couldn't adopt the machine." });
-      }
-    } catch (e) {
-      show({ kind: "err", text: String(e) });
-    } finally {
-      setAdopting(false);
-    }
-  }
 
   const refresh = useCallback(async () => {
     try {
@@ -84,8 +53,86 @@ export function Users() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  async function toggle(id: string, service: string, allow: boolean) {
-    // "server" is the controller itself — one plain-words warning.
+  async function addPerson() {
+    const name = addName.trim();
+    if (!name || addBusy) return;
+    setAddBusy(true);
+    try {
+      const r = await api.person({ do: "add", name });
+      if (!r.ok) {
+        show({ kind: "err", text: r.error ?? "Couldn't add the user." });
+      } else {
+        setAddOpen(false);
+        setAddName("");
+        if (r.key) setKey({ who: name, key: r.key });
+        else if (r.error) show({ kind: "err", text: r.error });
+        await refresh();
+      }
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
+  async function reissue(id: string, name: string) {
+    setBusyKey(`${id}:reissue`);
+    try {
+      const r = await api.person({ do: "reissue", id });
+      if (r.ok && r.key) setKey({ who: name, key: r.key });
+      else show({ kind: "err", text: r.error ?? "Couldn't mint a key." });
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function rename(id: string, name: string) {
+    setRenaming(null);
+    if (!name.trim()) return;
+    await api.person({ do: "rename", id, name: name.trim() });
+    await refresh();
+  }
+
+  async function removePerson() {
+    if (!deleting) return;
+    const { id, name } = deleting;
+    setDeleting(null);
+    setBusyKey(`${id}:delete`);
+    try {
+      const r = await api.person({ do: "delete", id });
+      show(
+        r.ok
+          ? {
+              kind: "ok",
+              text: `Removed ${name}. Their devices keep tailnet enrollment but lost all access.`,
+            }
+          : { kind: "err", text: r.error ?? "Delete failed." },
+      );
+      await refresh();
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function togglePerson(id: string, service: string, allow: boolean) {
+    if (
+      service === "server" &&
+      allow &&
+      !window.confirm(
+        "Adding this gives full admin rights to ALL of this user's devices.",
+      )
+    )
+      return;
+    setBusyKey(`${id}:${service}`);
+    try {
+      const r = await api.personAccess(id, service, allow);
+      if (!r.ok) show({ kind: "err", text: r.error ?? "Failed to update access." });
+      else if (r.error) show({ kind: "err", text: `Some devices lagged: ${r.error}` });
+      await refresh();
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function toggleDevice(id: string, service: string, allow: boolean) {
     if (
       service === "server" &&
       allow &&
@@ -97,30 +144,53 @@ export function Users() {
       const r = await api.userAccess(id, service, allow);
       if (!r.ok) show({ kind: "err", text: r.error ?? "Failed to update access." });
       await refresh();
-    } catch (e) {
-      show({ kind: "err", text: String(e) });
     } finally {
       setBusyKey("");
     }
   }
 
-  async function saveNick(id: string, nickname: string) {
-    setNickEdit(null);
-    setBusyKey(`${id}:nick`);
+  async function assign(node: string, uid: string) {
+    setBusyKey(`${node}:assign`);
     try {
-      await api.userNick(id, nickname);
+      const r = await api.person({ do: "assign", id: uid, node });
+      if (!r.ok) show({ kind: "err", text: r.error ?? "Assign failed." });
       await refresh();
     } finally {
       setBusyKey("");
     }
   }
 
+  async function adopt() {
+    const id = adoptId.trim();
+    if (!id || adopting) return;
+    setAdopting(true);
+    try {
+      const r = await api.userAdopt(id);
+      if (r.ok) {
+        show({
+          kind: "ok",
+          text: `${r.hostname || id} is now a user machine — assign it to a user below.`,
+        });
+        setAdoptOpen(false);
+        setAdoptId("");
+        await refresh();
+      } else {
+        show({ kind: "err", text: r.error ?? "Couldn't adopt the machine." });
+      }
+    } finally {
+      setAdopting(false);
+    }
+  }
+
+  const deviceMeta = (u: UserMachine) =>
+    [u.os, ago(u.last_seen), u.ip].filter(Boolean).join(" · ");
+
   return (
     <>
       <h1 className="page-title">Users</h1>
       <p style={{ color: "var(--muted)", margin: 0 }}>
-        Machines enrolled with a Tailarr user key. A machine reaches only the
-        services checked here — changes apply in seconds, no restarts.
+        Each user’s devices enroll with their personal key and inherit the
+        services granted here — changes apply in seconds, no restarts.
       </p>
 
       <FlashView flash={flash} onClose={clear} />
@@ -136,14 +206,11 @@ export function Users() {
           </Alert>
           <TsApiWizard onDone={refresh} />
         </div>
-      ) : status.error ? (
-        <div style={{ marginTop: "var(--sp-5)" }}>
-          <Alert kind="err">{status.error}</Alert>
-        </div>
       ) : (
         <>
+          {status.error && <Alert kind="err">{status.error}</Alert>}
           <div className="section-head">
-            <div className="section-title">Machines</div>
+            <div className="section-title">Users</div>
             <div style={{ display: "flex", gap: "var(--sp-2)" }}>
               <button
                 className="btn btn--ghost btn--sm"
@@ -153,15 +220,221 @@ export function Users() {
                 Adopt by ID
               </button>
               <button
-                className={"btn btn--primary btn--sm" + (minting ? " btn--loading" : "")}
-                disabled={minting}
-                title="Mint a single-use enrollment key for a new user machine"
-                onClick={mintKey}
+                className="btn btn--primary btn--sm"
+                onClick={() => setAddOpen(true)}
               >
                 + Add user
               </button>
             </div>
           </div>
+
+          {key && (
+            <div className="card" style={{ padding: "var(--sp-4)", marginTop: "var(--sp-3)" }}>
+              <div className="row__title">
+                Enrollment key for {key.who} (single-use, expires in 24h)
+              </div>
+              <div
+                className="log__body"
+                style={{ margin: "var(--sp-2) 0", userSelect: "all", cursor: "copy" }}
+                title="Click, then copy"
+              >
+                {key.key}
+              </div>
+              <p className="field__hint" style={{ margin: 0 }}>
+                On their device: install Tailscale and log in with this auth
+                key (e.g. <code>tailscale up --auth-key=…</code>). The device
+                joins as {key.who}’s, already carrying their access. Shown
+                once — reissue if you lose it.
+              </p>
+              <div className="preview-row" style={{ marginTop: "var(--sp-3)" }}>
+                <button className="btn btn--ghost btn--sm" onClick={() => setKey(null)}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
+          {status.people.length === 0 && (
+            <div className="empty" style={{ marginTop: "var(--sp-4)" }}>
+              <div className="empty__title">No users yet</div>
+              <p style={{ margin: 0 }}>
+                “+ Add user” creates a person and mints their enrollment key.
+                Every device that logs in with it is theirs automatically.
+              </p>
+            </div>
+          )}
+
+          <div className="row-list">
+            {status.people.map((p) => (
+              <div key={p.id} className="card" style={{ padding: "var(--sp-4)" }}>
+                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--sp-2)" }}>
+                  {renaming?.id === p.id ? (
+                    <input
+                      className="input"
+                      autoFocus
+                      value={renaming.value}
+                      onChange={(e) => setRenaming({ id: p.id, value: e.target.value })}
+                      onBlur={() => rename(p.id, renaming.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") rename(p.id, renaming.value);
+                        if (e.key === "Escape") setRenaming(null);
+                      }}
+                    />
+                  ) : (
+                    <div
+                      className="row__title"
+                      title="Click to rename"
+                      style={{ cursor: "pointer", fontSize: "var(--fs-md)" }}
+                      onClick={() => setRenaming({ id: p.id, value: p.name })}
+                    >
+                      {p.name}
+                    </div>
+                  )}
+                  <span className="chip">
+                    {p.devices.length} device{p.devices.length === 1 ? "" : "s"}
+                  </span>
+                  <div className="spacer" />
+                  <button
+                    className={
+                      "btn btn--ghost btn--sm" +
+                      (busyKey === `${p.id}:reissue` ? " btn--loading" : "")
+                    }
+                    disabled={!!busyKey}
+                    title="Mint a fresh enrollment key for this user's next device"
+                    onClick={() => reissue(p.id, p.name)}
+                  >
+                    {busyKey === `${p.id}:reissue` && <SpinnerIcon className="btn-icon" />}
+                    Reissue key
+                  </button>
+                  <button
+                    className="btn btn--ghost btn--sm"
+                    disabled={!!busyKey}
+                    onClick={() => setDeleting({ id: p.id, name: p.name })}
+                  >
+                    Remove
+                  </button>
+                </div>
+                <div style={{ marginTop: "var(--sp-3)" }}>
+                  <ChipPicker
+                    chips={p.badges}
+                    options={status.services.map((s) => ({ id: s }))}
+                    onAdd={(svc) => togglePerson(p.id, svc, true)}
+                    onRemove={(svc) => togglePerson(p.id, svc, false)}
+                    addLabel="+ Grant service"
+                    emptyHint="no services deployed"
+                    busyId={busyKey.startsWith(`${p.id}:`) ? busyKey.slice(p.id.length + 1) : ""}
+                    disabled={!!busyKey}
+                  />
+                </div>
+                {p.devices.length > 0 && (
+                  <div style={{ marginTop: "var(--sp-3)" }}>
+                    {p.devices.map((u) => (
+                      <div key={u.id} className="row__meta">
+                        <strong>{u.nickname || u.hostname}</strong>
+                        {deviceMeta(u) && ` · ${deviceMeta(u)}`}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {status.users.length > 0 && (
+            <>
+              <div className="section-title" style={{ marginTop: "var(--sp-6)" }}>
+                Unassigned machines
+              </div>
+              <p className="field__hint" style={{ marginTop: 0 }}>
+                Enrolled with an anonymous key or adopted by ID. Attach each
+                to a user (it inherits their access) — or keep granting
+                per-device below.
+              </p>
+              <div className="row-list">
+                {status.users.map((u) => (
+                  <div key={u.id} className="row card" style={{ flexWrap: "wrap" }}>
+                    <div style={{ minWidth: 180 }}>
+                      <div className="row__title">{u.nickname || u.hostname}</div>
+                      <div className="row__meta">{deviceMeta(u)}</div>
+                    </div>
+                    <div className="spacer" />
+                    {status.people.length > 0 && (
+                      <select
+                        className="input"
+                        style={{ width: "auto" }}
+                        disabled={!!busyKey}
+                        value=""
+                        onChange={(e) => e.target.value && assign(u.id, e.target.value)}
+                      >
+                        <option value="">Assign to user…</option>
+                        {status.people.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <ChipPicker
+                      chips={u.can}
+                      options={status.services.map((s) => ({ id: s }))}
+                      onAdd={(svc) => toggleDevice(u.id, svc, true)}
+                      onRemove={(svc) => toggleDevice(u.id, svc, false)}
+                      addLabel="+ Add service"
+                      emptyHint="no services deployed"
+                      busyId={busyKey.startsWith(`${u.id}:`) ? busyKey.slice(u.id.length + 1) : ""}
+                      disabled={!!busyKey}
+                    />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {addOpen && (
+            <div className="scrim" onClick={addBusy ? undefined : () => setAddOpen(false)}>
+              <div className="modal" onClick={(e) => e.stopPropagation()}>
+                <div className="modal__head">
+                  <span className="modal__title">Add a user</span>
+                  <div className="spacer" />
+                  <button
+                    className="btn btn--ghost btn--sm"
+                    disabled={addBusy}
+                    onClick={() => setAddOpen(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+                <p className="field__hint" style={{ margin: "0 0 var(--sp-3)" }}>
+                  Creates the user and mints their enrollment key in one step.
+                  Devices that log in with the key are theirs automatically
+                  and inherit whatever services you grant them — now or later.
+                </p>
+                <Field label="Name">
+                  <input
+                    className="input"
+                    autoFocus
+                    value={addName}
+                    placeholder="e.g. Dave"
+                    onChange={(e) => setAddName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") addPerson();
+                      if (e.key === "Escape") setAddOpen(false);
+                    }}
+                  />
+                </Field>
+                <div className="preview-row">
+                  <button
+                    className={"btn btn--primary" + (addBusy ? " btn--loading" : "")}
+                    disabled={addBusy || !addName.trim()}
+                    onClick={addPerson}
+                  >
+                    {addBusy && <SpinnerIcon className="btn-icon" />}
+                    Create + mint key
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {adoptOpen && (
             <div className="scrim" onClick={adopting ? undefined : () => setAdoptOpen(false)}>
@@ -180,10 +453,8 @@ export function Users() {
                 <p className="field__hint" style={{ margin: "0 0 var(--sp-3)" }}>
                   For devices already on the tailnet (e.g. an Apple TV that
                   signed in with an Apple ID). Paste its node ID from the
-                  Tailscale admin console (machine page URL, or “Copy node ID”).
-                  Tagging replaces the device’s login ownership — it becomes a
-                  Tailarr user machine with zero access until you grant
-                  services.
+                  Tailscale admin console. Tagging replaces the device’s login
+                  ownership — it appears under Unassigned with zero access.
                 </p>
                 <Field label="Node ID">
                   <input
@@ -212,85 +483,21 @@ export function Users() {
             </div>
           )}
 
-          {mintedKey && (
-            <div className="card" style={{ padding: "var(--sp-4)", marginTop: "var(--sp-3)" }}>
-              <div className="row__title">Enrollment key (single-use, expires in 24h)</div>
-              <div
-                className="log__body"
-                style={{ margin: "var(--sp-2) 0", userSelect: "all", cursor: "copy" }}
-                title="Click, then copy"
-              >
-                {mintedKey}
-              </div>
-              <p className="field__hint" style={{ margin: 0 }}>
-                On the new machine: install Tailscale and log in with this auth
-                key (e.g. <code>tailscale up --auth-key=…</code>). It appears
-                here with zero access — grant services with the checkboxes.
-                This key is shown once; mint another if you lose it.
+          {deleting && (
+            <ConfirmDialog
+              title={`Remove ${deleting.name}?`}
+              confirmLabel="Remove user"
+              onConfirm={removePerson}
+              onCancel={() => setDeleting(null)}
+            >
+              <p>
+                Their devices stay on the tailnet but lose every service
+                badge and the ownership link — they’ll show under Unassigned.
+                Any unused enrollment keys keep working until they expire
+                (24h), but new devices would arrive ownerless.
               </p>
-              <div className="preview-row" style={{ marginTop: "var(--sp-3)" }}>
-                <button className="btn btn--ghost btn--sm" onClick={() => setMintedKey("")}>
-                  Dismiss
-                </button>
-              </div>
-            </div>
+            </ConfirmDialog>
           )}
-          {status.users.length === 0 && (
-            <div className="empty" style={{ marginTop: "var(--sp-4)" }}>
-              <div className="empty__title">No user machines yet</div>
-              <p style={{ margin: 0 }}>
-                “+ Add user” mints an enrollment key. Devices that log in with
-                it appear here with zero access until you grant services.
-              </p>
-            </div>
-          )}
-          <div className="row-list">
-            {status.users.map((u) => (
-              <div key={u.id} className="row card" style={{ flexWrap: "wrap" }}>
-                <div style={{ minWidth: 180 }}>
-                  {nickEdit?.id === u.id ? (
-                    <input
-                      className="input"
-                      autoFocus
-                      value={nickEdit.value}
-                      placeholder={u.hostname}
-                      onChange={(e) => setNickEdit({ id: u.id, value: e.target.value })}
-                      onBlur={() => saveNick(u.id, nickEdit.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") saveNick(u.id, nickEdit.value);
-                        if (e.key === "Escape") setNickEdit(null);
-                      }}
-                    />
-                  ) : (
-                    <div
-                      className="row__title"
-                      title="Click to set a nickname"
-                      style={{ cursor: "pointer" }}
-                      onClick={() => setNickEdit({ id: u.id, value: u.nickname })}
-                    >
-                      {u.nickname || u.hostname}
-                    </div>
-                  )}
-                  <div className="row__meta">
-                    {u.nickname && `${u.hostname} · `}
-                    {u.os} · {ago(u.last_seen)}
-                    {u.ip && ` · ${u.ip}`}
-                  </div>
-                </div>
-                <div className="spacer" />
-                <ChipPicker
-                  chips={u.can}
-                  options={status.services.map((s) => ({ id: s }))}
-                  onAdd={(svc) => toggle(u.id, svc, true)}
-                  onRemove={(svc) => toggle(u.id, svc, false)}
-                  addLabel="+ Add service"
-                  emptyHint="no services deployed"
-                  busyId={busyKey.startsWith(`${u.id}:`) ? busyKey.slice(u.id.length + 1) : ""}
-                  disabled={!!busyKey}
-                />
-              </div>
-            ))}
-          </div>
         </>
       )}
     </>

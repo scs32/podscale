@@ -267,6 +267,23 @@ export const api = {
       { service, allow },
     ),
 
+  person: (body: {
+    do: "add" | "rename" | "reissue" | "delete" | "assign";
+    id?: string;
+    name?: string;
+    node?: string;
+  }) =>
+    postJSON<{ ok: boolean; error: string | null; id?: string; key?: string }>(
+      "/api/people",
+      body,
+    ),
+
+  personAccess: (id: string, service: string, allow: boolean) =>
+    postJSON<{ ok: boolean; error: string | null }>(
+      `/api/people/${id}/access`,
+      { service, allow },
+    ),
+
   monitorSetup: (body: { url: string; username: string; password: string }) =>
     postJSON<{ ok: boolean; error: string | null; fresh?: boolean }>(
       "/api/monitor/setup",
