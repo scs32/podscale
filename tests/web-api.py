@@ -1647,6 +1647,8 @@ try:
           and data["topics"] == ["tlr-ops"]
           and data["status"]["alerts_issued"] is True,
           "alerts issue mints a read credential and flags status")
+    check(data["user"] == "tailarr-alerts" and len(data["password"]) >= 20,
+          "issue returns user+password too (iOS ntfy app lacks token auth)")
     check("tailarr-alerts" in nfake.users
           and any("access" in c and "tailarr-alerts" in c and "read" in c
                   for c in nfake.calls),

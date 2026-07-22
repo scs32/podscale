@@ -26,6 +26,8 @@ export function Notifications() {
     url: string;
     topics: string[];
     token: string;
+    user: string;
+    password: string;
   } | null>(null);
 
   const refresh = useCallback(async () => {
@@ -94,7 +96,13 @@ export function Notifications() {
     try {
       const r = await api.ntfyAlerts("issue");
       if (r.ok && r.url !== undefined) {
-        setHandout({ url: r.url, topics: r.topics ?? [], token: r.token ?? "" });
+        setHandout({
+          url: r.url,
+          topics: r.topics ?? [],
+          token: r.token ?? "",
+          user: r.user ?? "",
+          password: r.password ?? "",
+        });
       } else {
         show({ kind: "err", text: r.error ?? "Could not issue the credential." });
       }
@@ -316,9 +324,18 @@ export function Notifications() {
                     </div>
                   </div>
                   <div>
+                    <div className="row__title">Username / password</div>
+                    <div className="row__meta">
+                      <code>{handout.user}</code> / <code>{handout.password}</code>
+                      {" "}— what the iOS ntfy app asks for when subscribing
+                      to a protected topic.
+                    </div>
+                  </div>
+                  <div>
                     <div className="row__title">Access token</div>
                     <div className="row__meta">
-                      <code>{handout.token}</code>
+                      <code>{handout.token}</code> — same account, for the
+                      Android/web ntfy apps and the Tailarr app.
                     </div>
                   </div>
                   <div>
@@ -336,8 +353,9 @@ export function Notifications() {
                 </div>
                 <p className="field__hint" style={{ marginTop: "var(--sp-3)" }}>
                   In the ntfy app: add a subscription → “Use another server”
-                  with the server and topic above, then add the access token
-                  for that server under Settings → Manage users.
+                  with the server and topic above. iOS prompts for the
+                  username and password; on Android/web you can instead add
+                  the access token under Settings → Manage users.
                 </p>
               </>
             ) : null}

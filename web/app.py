@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.18.3"
+VERSION = "0.18.4"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -4008,6 +4008,14 @@ def op_ntfy_alerts(data):
         if r.returncode != 0 and "exists" not in (r.stdout + r.stderr):
             return {"ok": False, "error": ("could not create the alerts "
                     "account: " + (r.stdout + r.stderr).strip()[-200:])}
+    elif not saved.get("password"):
+        # Account exists but the registry lost its password (restored
+        # backup): reset it so what the card displays is always true.
+        r = _ntfy_cli(pod, "user", "change-pass", user,
+                      env={"NTFY_PASSWORD": password})
+        if r.returncode != 0:
+            return {"ok": False, "error": ("could not reset the alerts "
+                    "password: " + (r.stdout + r.stderr).strip()[-200:])}
     r = _ntfy_cli(pod, "access", user, "tlr-*", "read")
     if r.returncode != 0:
         return {"ok": False, "error": ("could not grant read access: "
@@ -4024,8 +4032,12 @@ def op_ntfy_alerts(data):
     ntfy_client.save_conf(conf)
     url = conf.get("public_url") or (f"https://{entry['dns_name']}"
                                      if entry.get("dns_name") else "")
+    # user+password ride along because the iOS ntfy app only supports
+    # basic auth for protected servers (tokens are Android/web/CLI);
+    # both credentials are the same read-only account.
     return {"ok": True, "error": None, "url": url,
             "topics": [ntfy_client.OPS_TOPIC], "token": token,
+            "user": user, "password": password,
             "status": status_ntfy()}
 
 
