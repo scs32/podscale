@@ -1611,6 +1611,10 @@ try:
     code, data = post("/api/ntfy/setup", {})
     check(code == 200 and data["ok"],
           "ntfy setup converges against the CLI (no restart needed)")
+    check(app.pod_config("ntfy").get("funnel") == "yes"
+          and data["status"]["funnel_on"] is True,
+          "setup itself opens the public endpoint (funnel is part of the "
+          "feature, not a Network-page step)")
     conf = app.ntfy_client.load_conf()
     check(conf is not None
           and conf["publisher"]["token"].startswith("tk_")
@@ -1627,6 +1631,15 @@ try:
     check(code == 200 and data["ok"]
           and not any("token" in c for c in nfake.calls),
           "re-running setup keeps existing tokens (idempotent)")
+    code, data = post("/api/ntfy/funnel", {"enabled": False})
+    check(code == 200 and data["ok"]
+          and app.pod_config("ntfy").get("funnel") == "no"
+          and data["status"]["funnel_on"] is False,
+          "Notifications page owns the funnel toggle (off)")
+    code, data = post("/api/ntfy/funnel", {"enabled": True})
+    check(code == 200 and data["ok"]
+          and app.pod_config("ntfy").get("funnel") == "yes",
+          "Notifications page owns the funnel toggle (back on)")
 finally:
     app.podman = _real_ntfy_podman
 

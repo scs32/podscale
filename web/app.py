@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.18.0"
+VERSION = "0.18.1"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -3811,7 +3811,13 @@ def op_ntfy_setup(_data):
     write server.yml (into the host side of the /etc/ntfy volume — the
     default install puts it under PODS_DIR, which the controller mounts)
     -> restart the pod if the file changed -> provision accounts/tokens
-    via the ntfy CLI -> save the registry -> test-publish."""
+    via the ntfy CLI -> save the registry -> ENABLE FUNNEL -> test-publish.
+
+    Funnel is part of setup, not a separate Network-page step: phone
+    delivery IS the feature, and the deny-all ACL + per-account tokens
+    are what make the public endpoint safe. The SPA warns about the
+    internet exposure before calling this; the Notifications page is the
+    single control surface for everything ntfy."""
     entry = _discover_ntfy(fresh=True)
     if not entry:
         return {"ok": False,
@@ -3866,11 +3872,30 @@ def op_ntfy_setup(_data):
         "arr": conf.get("arr") or {},
     })
     ntfy_client.save_conf(conf)
+    # Funnel is part of the feature (see docstring). Non-fatal: a refused
+    # funnel (nodeAttr not granted yet, sidecar down) leaves everything
+    # else working on the tailnet; re-running setup retries it.
+    funnel_error = None
+    if (pod_config(name) or {}).get("funnel") != "yes":
+        fr = op_network_set(name, {"funnel": True})
+        if not fr["ok"]:
+            funnel_error = fr.get("error") or "funnel enable failed"
     entry = _discover_ntfy(fresh=True)  # IP may differ after the restart
     test_err = ntfy_client.publish(
         conf, _ntfy_internal_url(entry), ntfy_client.OPS_TOPIC,
         "Tailarr", "Notifications are set up.")
     return {"ok": True, "error": None, "test_error": test_err,
+            "funnel_error": funnel_error, "status": status_ntfy()}
+
+
+def op_ntfy_funnel(data):
+    """Toggle ntfy's public endpoint from the Notifications page — the
+    single control surface for ntfy (the Network page hides system pods)."""
+    entry = _discover_ntfy(fresh=True)
+    if not entry:
+        return {"ok": False, "error": "No ntfy pod found."}
+    r = op_network_set(entry["name"], {"funnel": bool(data.get("enabled"))})
+    return {"ok": r["ok"], "error": r.get("error"),
             "status": status_ntfy()}
 
 
@@ -4635,6 +4660,10 @@ def api_post(path, data):
 
     if path == "/api/ntfy/test":
         result = op_ntfy_test(data)
+        return (200 if result["ok"] else 400), result
+
+    if path == "/api/ntfy/funnel":
+        result = op_ntfy_funnel(data)
         return (200 if result["ok"] else 400), result
 
     m = re.fullmatch(r"/api/monitor/pods/([a-z0-9][a-z0-9-]*)", path)

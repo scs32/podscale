@@ -3,18 +3,23 @@ import { Link } from "react-router-dom";
 import type { NtfyStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FlashView, useFlash } from "../components/Flash";
 import { BellIcon, SpinnerIcon } from "../components/Icons";
 
 // Notifications ride an ntfy SYSTEM pod: Tailarr installs and manages it
-// (accounts, topics, deny-all ACL) — it never appears to user devices and
-// is not shareable. Setup is zero-input: one button writes the server
-// config, restarts the pod, and provisions the controller's accounts.
+// (accounts, topics, deny-all ACL, funnel) — it never appears to user
+// devices, is not shareable, and THIS page is its only control surface
+// (system pods are hidden on the Network page and locked on pod cards).
+// Setup deliberately includes the Funnel exposure, behind the warning
+// dialog below: phone delivery IS the feature, and deny-all + tokens are
+// what make the public endpoint safe.
 
 export function Notifications() {
   const [status, setStatus] = useState<NtfyStatus | null>(null);
   const { flash, show, clear } = useFlash();
-  const [busy, setBusy] = useState<"" | "setup" | "test">("");
+  const [busy, setBusy] = useState<"" | "setup" | "test" | "funnel">("");
+  const [confirming, setConfirming] = useState<"" | "setup" | "funnel">("");
 
   const refresh = useCallback(async () => {
     try {
@@ -34,19 +39,46 @@ export function Notifications() {
     setBusy("setup");
     try {
       const r = await api.ntfySetup();
+      if (!r.ok) {
+        show({ kind: "err", text: r.error ?? "Setup failed." });
+      } else if (r.funnel_error) {
+        show({
+          kind: "err",
+          text: `Set up, but the public endpoint could not be opened: ${r.funnel_error}. Re-run setup to retry.`,
+        });
+      } else {
+        show({
+          kind: "ok",
+          text: r.test_error
+            ? `Set up — but the test message failed: ${r.test_error}`
+            : "Notifications are set up (a test message was delivered).",
+        });
+      }
+      await refresh();
+    } finally {
+      setBusy("");
+      setConfirming("");
+    }
+  }
+
+  async function setFunnel(enabled: boolean) {
+    setBusy("funnel");
+    try {
+      const r = await api.ntfyFunnel(enabled);
       show(
         r.ok
           ? {
               kind: "ok",
-              text: r.test_error
-                ? `Set up — but the test message failed: ${r.test_error}`
-                : "Notifications are set up (a test message was delivered).",
+              text: enabled
+                ? "Public endpoint is on."
+                : "Public endpoint is off — phones outside the tailnet won't receive.",
             }
-          : { kind: "err", text: r.error ?? "Setup failed." },
+          : { kind: "err", text: r.error ?? "Toggle failed." },
       );
       await refresh();
     } finally {
       setBusy("");
+      setConfirming("");
     }
   }
 
@@ -63,6 +95,21 @@ export function Notifications() {
       setBusy("");
     }
   }
+
+  const funnelWarning = (
+    <>
+      <p>
+        The ntfy endpoint will be published to the <strong>internet</strong>{" "}
+        over Tailscale Funnel (HTTPS). That is how phones receive
+        notifications when they're away from the tailnet.
+      </p>
+      <p>
+        It stays locked down: access is deny-all, so nothing is readable or
+        writable without a token Tailarr issued. The pod itself remains
+        invisible to your tailnet users.
+      </p>
+    </>
+  );
 
   return (
     <div>
@@ -87,13 +134,13 @@ export function Notifications() {
         <div className="card panel">
           <p className="field__hint">
             The ntfy pod is deployed ({status.state || "state unknown"}).
-            One click writes its server config (authentication on,
-            deny-all access), restarts it, and creates the accounts
-            Tailarr publishes with.
+            One click writes its server config (authentication on, deny-all
+            access), creates the accounts Tailarr publishes with, and opens
+            the token-protected public endpoint for phone delivery.
           </p>
           <button
             className="btn btn--primary"
-            onClick={setup}
+            onClick={() => setConfirming("setup")}
             disabled={!!busy}
           >
             {busy === "setup" ? <SpinnerIcon /> : <BellIcon />} Set up
@@ -132,19 +179,26 @@ export function Notifications() {
                 </div>
               </div>
               <div>
-                <div className="row__title">Phone delivery</div>
+                <div className="row__title">
+                  Phone delivery{" "}
+                  <span
+                    className={
+                      "chip" + (status.funnel_on ? " chip--installed" : "")
+                    }
+                  >
+                    {status.funnel_on ? "public endpoint on" : "off"}
+                  </span>
+                </div>
                 <div className="row__meta">
                   {status.funnel_on ? (
                     <>
-                      Public endpoint (token-protected):{" "}
+                      Token-protected endpoint:{" "}
                       <code>{status.public_url || "enrolling…"}</code>
                     </>
                   ) : (
                     <>
-                      Funnel is <strong>off</strong> — phones outside the
-                      tailnet can’t receive. Turn it on for {status.pod} from
-                      the <Link to="/network">Network page</Link>. Access
-                      stays deny-all: only issued tokens can read topics.
+                      Phones outside the tailnet can’t receive until the
+                      public endpoint is on.
                     </>
                   )}
                 </div>
@@ -155,12 +209,33 @@ export function Notifications() {
                 {busy === "test" ? <SpinnerIcon /> : <BellIcon />} Send a test
                 notification
               </button>
+              {status.funnel_on ? (
+                <button
+                  className="btn"
+                  onClick={() => setFunnel(false)}
+                  disabled={!!busy}
+                  style={{ marginLeft: "var(--sp-3)" }}
+                >
+                  {busy === "funnel" && <SpinnerIcon />} Turn public endpoint
+                  off
+                </button>
+              ) : (
+                <button
+                  className="btn"
+                  onClick={() => setConfirming("funnel")}
+                  disabled={!!busy}
+                  style={{ marginLeft: "var(--sp-3)" }}
+                >
+                  {busy === "funnel" && <SpinnerIcon />} Turn public endpoint
+                  on
+                </button>
+              )}
               <button
                 className="btn"
-                onClick={setup}
+                onClick={() => setConfirming("setup")}
                 disabled={!!busy}
                 style={{ marginLeft: "var(--sp-3)" }}
-                title="Safe to re-run: converges config and accounts without touching existing tokens."
+                title="Safe to re-run: converges config, accounts, and the public endpoint without touching existing tokens."
               >
                 Re-run setup
               </button>
@@ -170,6 +245,26 @@ export function Notifications() {
       )}
 
       {!status && <div className="card panel">Loading…</div>}
+
+      {confirming && (
+        <ConfirmDialog
+          title={
+            confirming === "setup"
+              ? "Set up notifications?"
+              : "Open the public endpoint?"
+          }
+          confirmLabel={
+            confirming === "setup" ? "Set up + go public" : "Go public"
+          }
+          busy={!!busy}
+          onConfirm={() =>
+            confirming === "setup" ? setup() : setFunnel(true)
+          }
+          onCancel={() => setConfirming("")}
+        >
+          {funnelWarning}
+        </ConfirmDialog>
+      )}
     </div>
   );
 }

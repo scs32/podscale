@@ -165,8 +165,15 @@ export const api = {
       ok: boolean;
       error: string | null;
       test_error?: string | null;
+      funnel_error?: string | null;
       status?: NtfyStatus;
     }>("/api/ntfy/setup", {}),
+
+  ntfyFunnel: (enabled: boolean) =>
+    postJSON<{ ok: boolean; error: string | null; status?: NtfyStatus }>(
+      "/api/ntfy/funnel",
+      { enabled },
+    ),
 
   ntfyTest: () =>
     postJSON<{ ok: boolean; error: string | null }>("/api/ntfy/test", {}),
