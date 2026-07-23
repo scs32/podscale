@@ -61,6 +61,11 @@ export function Notifications() {
           kind: "err",
           text: `Set up, but the public endpoint could not be opened: ${r.funnel_error}. Re-run setup to retry.`,
         });
+      } else if (r.gateway_error) {
+        show({
+          kind: "err",
+          text: `Set up, but the app self-config gateway failed to deploy: ${r.gateway_error}. Re-run setup to retry.`,
+        });
       } else {
         show({
           kind: "ok",
@@ -267,6 +272,34 @@ export function Notifications() {
                     <>
                       Phones outside the tailnet can’t receive until the
                       public endpoint is on.
+                    </>
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="row__title">
+                  Tailarr app self-config{" "}
+                  <span
+                    className={
+                      "chip" + (status.gateway ? " chip--installed" : " chip--danger")
+                    }
+                  >
+                    {status.gateway ? "gateway running" : "gateway missing"}
+                  </span>
+                </div>
+                <div className="row__meta">
+                  {status.gateway ? (
+                    <>
+                      User devices fetch their own notification config from
+                      the <code>tailarr-gate</code> node — nothing to hand
+                      out for Tailarr-app users.
+                    </>
+                  ) : (
+                    <>
+                      The self-config gateway is not deployed, so the
+                      Tailarr app’s Automatic Setup will fail —{" "}
+                      <strong>Re-run setup</strong> to deploy it (requires
+                      controller v0.22.1+).
                     </>
                   )}
                 </div>
