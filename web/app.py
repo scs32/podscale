@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.22.4"
+VERSION = "0.23.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -3638,16 +3638,36 @@ def _converge_notifications():
     """Self-heal the notification stack after a controller upgrade or
     restart, so the operator never has to re-run setup by hand: when
     notifications are configured, ensure the app self-config gateway is
-    deployed (idempotent; _ensure_gateway no-ops when it already runs)."""
+    deployed — and running the CONTROLLER'S CURRENT image. The gateway
+    runs our image with the selfconfig entrypoint; after an upgrade a
+    stale copy wouldn't know new /self/* routes, so on image mismatch
+    the saved config is repointed and the pod re-rendered in place
+    (never remove+reinstall: that wipes its Tailscale identity and
+    invites a hostname collision)."""
     if not ntfy_client.load_conf():
         return
-    if GATEWAY_POD in deployed_services():
+    if GATEWAY_POD not in deployed_services():
+        err = _ensure_gateway()
+        if err:
+            print(f"gateway converge: {err}")
+        else:
+            print("gateway converge: redeployed the app self-config gateway")
         return
-    err = _ensure_gateway()
-    if err:
-        print(f"gateway converge: {err}")
-    else:
-        print("gateway converge: redeployed the app self-config gateway")
+    info = pod_config(GATEWAY_POD) or {}
+    image = _controller_image()
+    if not image or not info.get("image") or info["image"] == image:
+        return
+    info["image"] = image
+    try:
+        with open(os.path.join(PODS_DIR, GATEWAY_POD, ".config.json"),
+                  "w") as f:
+            json.dump(info, f, indent=2)
+    except OSError as e:
+        print(f"gateway converge: {e}")
+        return
+    r = _run_rerender(GATEWAY_POD)
+    print("gateway converge: moved the gateway to the controller image "
+          f"({'ok' if r['ok'] else r.get('error') or r['status']})")
 
 
 def _auto_rerender_after_upgrade():
@@ -4620,6 +4640,24 @@ def _controller_ip():
         return ""
 
 
+def _controller_dns():
+    """The controller's MagicDNS name, straight from its sidecar (same
+    direct-ask rationale as _controller_ip: bootstrap-created
+    controllers have no .config.json for network_entry to gate on)."""
+    ctrl = _controller_name()
+    if not ctrl:
+        return ""
+    r = podman("exec", f"tailscale-{ctrl}", "tailscale", "status",
+               "--json", "--peers=false", timeout=15)
+    if r.returncode != 0:
+        return ""
+    try:
+        return (((json.loads(r.stdout) or {}).get("Self") or {})
+                .get("DNSName") or "").rstrip(".")
+    except ValueError:
+        return ""
+
+
 def _ensure_gateway():
     """Deploy the gateway pod once (idempotent; runs during ntfy setup).
     Uses the controller's own image with the selfconfig entrypoint. The
@@ -4685,7 +4723,65 @@ def op_gateway_resolve(data):
     if not uid:
         return {"ok": False,
                 "error": "this device is not assigned to a user"}
+    want = (data.get("want") or "notifications").strip()
+    if want == "services":
+        return op_person_services(uid)
+    if want != "notifications":
+        return {"ok": False, "error": "unknown request"}
     return op_person_notify(uid)
+
+
+# Native app-module kinds the services handout fully configures: each has
+# a matching connection module in the Tailarr app AND an extractable
+# credential (the Arr config.xml ApiKey the ntfy wiring already reads).
+# Every other badged service still appears — as an "external" entry (URL
+# only) the app renders as a web bookmark, so nothing a badge grants is
+# ever invisible. nzbget/sabnzbd/tautulli extractors are the planned
+# release 2 of this contract.
+SERVICE_MODULE_KINDS = ("sonarr", "radarr", "lidarr")
+
+
+def op_person_services(uid):
+    """The app's services handout (GET /self/services via the gateway):
+    every service this person's badges grant, ready to drop into the
+    app's modules.
+
+    Credentials are read live from the pod, never stored. No privilege
+    is widened: the badge already grants network reach to the service,
+    and the Arr's own Settings page shows the same API key to anyone who
+    can load it — this only removes the scavenger hunt. Contract notes
+    for the app: "url" may be "" while a service is stopped (its sidecar
+    holds the MagicDNS name) — keep the previous value rather than
+    deconfigure; "auth" is null when the credential couldn't be read —
+    create the module and prompt for the missing piece."""
+    people = load_people()
+    if uid not in people:
+        return {"ok": False, "error": "Unknown user."}
+    valid = set(_shareable_services())
+    ps = ps_all()
+    services = []
+    for svc in sorted(set(people[uid].get("badges") or [])):
+        if svc == SERVER_SERVICE:
+            dns = _controller_dns()
+            services.append({
+                "type": "tailarr", "name": SERVER_SERVICE,
+                "url": f"https://{dns}" if dns else "", "auth": None})
+            continue
+        if svc not in valid:
+            continue  # stale badge: the service is gone
+        kind, _ver = _arr_kind(svc)
+        if kind not in SERVICE_MODULE_KINDS:
+            kind = None
+        auth = None
+        if kind:
+            key = _arr_api_key(svc)
+            if key:
+                auth = {"api_key": key}
+        services.append({
+            "type": kind or "external", "name": svc,
+            "url": service_url(network_entry(svc, ps)), "auth": auth})
+    return {"ok": True, "error": None, "kind": "services",
+            "services": services}
 
 
 # =========================================================================
