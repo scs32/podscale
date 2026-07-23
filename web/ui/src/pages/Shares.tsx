@@ -4,6 +4,7 @@ import { api } from "../api";
 import { Field, Toggle } from "../components/Form";
 import { FlashView, useFlash } from "../components/Flash";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { FolderBrowser } from "../components/FolderBrowser";
 import { SpinnerIcon } from "../components/Icons";
 
 // Defining shared folders only. Attaching a share to a pod happens in the
@@ -168,13 +169,17 @@ export function Shares() {
                 placeholder="media"
               />
             </Field>
-            <Field label="Host path">
-              <input
-                className="input"
-                value={host}
-                onChange={(e) => setHost(e.target.value)}
-                placeholder="/data"
-              />
+            <Field label="Host path" hint="pick with the browse button">
+              <div style={{ display: "flex", gap: "var(--sp-2)" }}>
+                <input
+                  className="input"
+                  value={host}
+                  readOnly
+                  placeholder="browse for a host folder…"
+                  title="Use the folder button to browse the host (new folders can be created there)"
+                />
+                <FolderBrowser value={host} onPick={setHost} />
+              </div>
             </Field>
             <Field label="Container path" hint="blank = same as host path">
               <input

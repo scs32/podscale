@@ -2127,6 +2127,20 @@ try:
 finally:
     app.podman = _real_ip_podman
 
+# The gateway is name-matched, not image-matched: /api/pods and
+# /api/network must flag it system so the Dashboard/Network hide it
+# (regression: they used SYSTEM_IMAGES image-substring only, which
+# missed the gateway — it leaked onto the Dashboard, caught 2026-07-22).
+code, data = get("/api/pods")
+_bn = {p["name"]: p for p in data["pods"]}
+check(_bn["tailarr-gate"]["system"] is True
+      and _bn["apitest"]["system"] is False,
+      "/api/pods flags the name-matched gateway as system")
+check(app._display_name("ntfy") == "Notifications"
+      and app._display_name("tailarr-gate") == "Tailarr app setup"
+      and app._display_name("apitest") == "apitest",
+      "system pods get function-first display names (Stats)")
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

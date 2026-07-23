@@ -53,7 +53,7 @@ function PodCard({ pod }: { pod: PodStat }) {
           <PodGlyph />
         </div>
         <div className="pod-card__info">
-          <div className="pod-card__title">{pod.name}</div>
+          <div className="pod-card__title">{pod.label || pod.name}</div>
           <div className="pod-card__url">
             {running ? "running" : pod.state}
           </div>

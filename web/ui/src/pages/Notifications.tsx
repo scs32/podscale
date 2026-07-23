@@ -303,7 +303,14 @@ export function Notifications() {
                 </div>
               </div>
             </div>
-            <div style={{ marginTop: "var(--sp-4)" }}>
+            <div
+              style={{
+                marginTop: "var(--sp-4)",
+                display: "flex",
+                flexWrap: "wrap",
+                gap: "var(--sp-3)",
+              }}
+            >
               <button className="btn" onClick={test} disabled={!!busy}>
                 {busy === "test" ? <SpinnerIcon /> : <BellIcon />} Send a test
                 notification
@@ -313,7 +320,6 @@ export function Notifications() {
                   className="btn"
                   onClick={() => setFunnel(false)}
                   disabled={!!busy}
-                  style={{ marginLeft: "var(--sp-3)" }}
                 >
                   {busy === "funnel" && <SpinnerIcon />} Turn public endpoint
                   off
@@ -323,7 +329,6 @@ export function Notifications() {
                   className="btn"
                   onClick={() => setConfirming("funnel")}
                   disabled={!!busy}
-                  style={{ marginLeft: "var(--sp-3)" }}
                 >
                   {busy === "funnel" && <SpinnerIcon />} Turn public endpoint
                   on
@@ -333,7 +338,6 @@ export function Notifications() {
                 className="btn"
                 onClick={() => setConfirming("setup")}
                 disabled={!!busy}
-                style={{ marginLeft: "var(--sp-3)" }}
                 title="Safe to re-run: converges config, accounts, and the public endpoint without touching existing tokens."
               >
                 Re-run setup

@@ -447,6 +447,7 @@ export interface ContainerStat {
 
 export interface PodStat {
   name: string;
+  label: string; // function-first display name (system pods)
   state: PodState;
   cpu_percent: number; // app + sidecar
   mem_bytes: number; // app + sidecar
