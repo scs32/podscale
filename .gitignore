@@ -8,3 +8,4 @@ cleanup.sh
 CLAUDE.md
 .claude/
 .wrangler/
+__pycache__/

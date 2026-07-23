@@ -4,7 +4,9 @@ Runs the CONTROLLER'S OWN IMAGE with this entrypoint — a deliberately
 tiny surface that user devices are allowed to reach (the only fenced
 grant with tag:tailarr-user as a network src; see acl-design.md §12).
 The Tailarr app on a user's device calls GET /self/notifications and
-gets back ITS OWN notification credentials, no configuration needed.
+gets back ITS OWN notification credentials, no configuration needed;
+GET /self/services returns the services its person's badges grant,
+ready to drop into the app's modules (v0.23.0).
 
 Identity comes from the wire: this listener binds directly in the
 sidecar's network namespace on plain :80, so the TCP peer address IS
@@ -43,8 +45,16 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # Each /self/* route maps to a "want" the controller resolves for
+    # the whois'd caller — adding a route here needs a matching branch
+    # in op_gateway_resolve (same release: the converge pass moves this
+    # pod onto the new controller image at upgrade).
+    ROUTES = {"/self/notifications": "notifications",
+              "/self/services": "services"}
+
     def do_GET(self):
-        if self.path != "/self/notifications":
+        want = self.ROUTES.get(self.path)
+        if not want:
             return self._send({"ok": False, "error": "not found"}, 404)
         if not (CONTROLLER_URL and GATEWAY_SECRET):
             return self._send(
@@ -52,6 +62,7 @@ class Handler(BaseHTTPRequestHandler):
         req = urllib.request.Request(
             CONTROLLER_URL + "/api/gateway/resolve",
             data=json.dumps({"ip": self.client_address[0],
+                             "want": want,
                              "secret": GATEWAY_SECRET}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",

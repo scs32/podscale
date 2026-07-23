@@ -2141,6 +2141,86 @@ check(app._display_name("ntfy") == "Notifications"
       and app._display_name("apitest") == "apitest",
       "system pods get function-first display names (Stats)")
 
+# --- services handout: /self/services via the gateway (v0.23.0) ----------
+# The same whois'd person asks for their services instead of their
+# notification config: badged services come back ready for the app's
+# modules — native kinds (sonarr/radarr/lidarr) with the Arr's own API
+# key, everything else as an external (URL-only) bookmark entry.
+_ppl = app.load_people()
+_ppl[_gate_uid]["badges"] = ["apitest", "sonarr", "server", "ghostsvc"]
+app.save_people(_ppl)
+_real_svc_key = app._arr_api_key
+_real_svc_net = app.network_entry
+_real_svc_dns = app._controller_dns
+_real_svc_podman = app.podman
+app._arr_api_key = lambda pod: "arr-key-123" if pod == "sonarr" else None
+app.network_entry = (lambda name, ps: {
+    "name": name, "ip": "100.64.0.5", "ports": {"80": "80"},
+    "state": "running", "dns_name": f"{name}.test.ts.net", "https": True,
+    "controller": False, "system": False, "tailscale": True,
+    "funnel": False, "network_mode": "bridge", "busy": None})
+app._controller_dns = lambda: "tailarr.test.ts.net"
+app.podman = gfake  # whois resolves the caller to the person
+try:
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret",
+                       "want": "services"})
+    rows = {s["name"]: s for s in data.get("services") or []}
+    check(code == 200 and data["ok"] and data["kind"] == "services"
+          and rows["sonarr"]["type"] == "sonarr"
+          and rows["sonarr"]["auth"] == {"api_key": "arr-key-123"}
+          and rows["sonarr"]["url"] == "https://sonarr.test.ts.net",
+          "services handout: native module entry carries the Arr's key")
+    check(rows["apitest"]["type"] == "external"
+          and rows["apitest"]["auth"] is None
+          and rows["apitest"]["url"] == "https://apitest.test.ts.net",
+          "non-module badges appear as external (URL-only) entries")
+    check(rows["server"]["type"] == "tailarr"
+          and rows["server"]["url"] == "https://tailarr.test.ts.net"
+          and rows["server"]["auth"] is None,
+          "the server badge configures the app's own server module")
+    check("ghostsvc" not in rows, "stale badges are skipped, not errors")
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret",
+                       "want": "bogus"})
+    check(code == 400 and not data["ok"], "unknown want is refused")
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret"})
+    check(code == 200 and "token" in data and "services" not in data,
+          "want defaults to notifications (pre-0.23.0 gateway compat)")
+finally:
+    app._arr_api_key = _real_svc_key
+    app.network_entry = _real_svc_net
+    app._controller_dns = _real_svc_dns
+    app.podman = _real_svc_podman
+
+# --- gateway converge: upgrades move the pod onto the new image -----------
+# The gateway runs the controller's image; after an upgrade a stale copy
+# wouldn't know new /self/* routes. Converge must repoint the saved
+# config and re-render IN PLACE (never remove+reinstall — that wipes the
+# Tailscale identity and invites a hostname collision).
+_rr_calls = []
+_real_cvg_img = app._controller_image
+_real_cvg_rr = app._run_rerender
+app._controller_image = lambda: "ghcr.io/scs32/tailarr:v9.9.9"
+app._run_rerender = lambda name, start=True: (
+    _rr_calls.append(name) or {"ok": True, "name": name,
+                               "action": "rerender", "status": "ok",
+                               "error": None, "output": ""})
+try:
+    app._converge_notifications()
+    check(_rr_calls == ["tailarr-gate"]
+          and app.pod_config("tailarr-gate")["image"]
+          == "ghcr.io/scs32/tailarr:v9.9.9",
+          "converge repoints + re-renders a stale gateway image")
+    _rr_calls.clear()
+    app._converge_notifications()
+    check(_rr_calls == [],
+          "converge is a no-op when the gateway image matches")
+finally:
+    app._controller_image = _real_cvg_img
+    app._run_rerender = _real_cvg_rr
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")
