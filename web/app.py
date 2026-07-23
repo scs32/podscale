@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.22.3"
+VERSION = "0.22.4"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -72,6 +72,18 @@ SYSTEM_IMAGES = ("binwiederhier/ntfy",)
 GATEWAY_POD = "tailarr-gate"
 GATEWAY_PORT = "80"
 GATEWAY_FILE = os.path.join(PODS_DIR, ".gateway.json")
+
+# Function-first display names for the infrastructure pods, used where
+# they legitimately appear to the admin (resource stats) — never leak
+# the implementation name. Everywhere else they're hidden outright.
+POD_DISPLAY_NAMES = {"tailarr-gate": "Tailarr app setup"}
+
+
+def _display_name(name):
+    if any(s in (pod_config(name) or {}).get("image", "")
+           for s in ("binwiederhier/ntfy",)):
+        return "Notifications"
+    return POD_DISPLAY_NAMES.get(name, name)
 
 # Host platform fact: written by the bootstrap (apple/container guests run
 # vminitd as PID 1 — that single fact drives the peer-relay offer and skips
@@ -3078,7 +3090,7 @@ def status_pods():
             "name": name,
             "state": pod_state(name, ps),
             "controller": name in CONTROLLER_PODS,
-            "system": any(s in image for s in SYSTEM_IMAGES),
+            "system": _is_system(name),
             "image": image,
             "tailscale": info.get("include_tailscale") == "yes",
             "https": info.get("include_https") == "yes",
@@ -3281,6 +3293,7 @@ def status_stats():
         tot_cpu, tot_mem = tot_cpu + cpu, tot_mem + mem
         pods.append({
             "name": name,
+            "label": _display_name(name),
             "state": pod_state(name, ps),
             "cpu_percent": cpu,
             "mem_bytes": mem,
@@ -3621,6 +3634,22 @@ def _run_rerender(name, start=True):
 RERENDER_MARKER = os.path.join(UPGRADE_DIR, "rerendered.json")
 
 
+def _converge_notifications():
+    """Self-heal the notification stack after a controller upgrade or
+    restart, so the operator never has to re-run setup by hand: when
+    notifications are configured, ensure the app self-config gateway is
+    deployed (idempotent; _ensure_gateway no-ops when it already runs)."""
+    if not ntfy_client.load_conf():
+        return
+    if GATEWAY_POD in deployed_services():
+        return
+    err = _ensure_gateway()
+    if err:
+        print(f"gateway converge: {err}")
+    else:
+        print("gateway converge: redeployed the app self-config gateway")
+
+
 def _auto_rerender_after_upgrade():
     """One-shot fleet rerender after a successful controller upgrade.
 
@@ -3884,7 +3913,7 @@ def network_entry(name, ps):
     entry = {
         "name": name,
         "controller": name in CONTROLLER_PODS,
-        "system": any(s in info.get("image", "") for s in SYSTEM_IMAGES),
+        "system": _is_system(name),
         "state": pod_state(name, ps),
         "tailscale": ts,
         "https": info.get("include_https") == "yes",
@@ -5751,6 +5780,10 @@ def _maintenance_loop():
     # warned about the restarts up front, so no "Finish upgrade" step.
     threading.Thread(target=_auto_rerender_after_upgrade,
                      daemon=True).start()
+    # Self-heal notifications so an upgrade/restart never needs a manual
+    # "Re-run setup": redeploy the app self-config gateway if it went
+    # missing. Cheap no-op when it's already up.
+    threading.Thread(target=_converge_notifications, daemon=True).start()
     while True:
         try:
             ensure_controller_serve()
