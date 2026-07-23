@@ -177,7 +177,8 @@ export function Notifications() {
   const funnelWarning = (
     <>
       <p>
-        The ntfy endpoint will be published to the <strong>internet</strong>{" "}
+        The notification endpoint will be published to the{" "}
+        <strong>internet</strong>{" "}
         over Tailscale Funnel (HTTPS). That is how phones receive
         notifications when they're away from the tailnet.
       </p>
@@ -233,7 +234,7 @@ export function Notifications() {
             <div className="row-list">
               <div>
                 <div className="row__title">
-                  {status.pod}{" "}
+                  Notification service{" "}
                   <span
                     className={
                       "chip" +
@@ -241,8 +242,7 @@ export function Notifications() {
                     }
                   >
                     {status.state || "unknown"}
-                  </span>{" "}
-                  <span className="chip">system pod</span>
+                  </span>
                 </div>
                 <div className="row__meta">
                   Admin alerts publish to the <code>{status.ops_topic}</code>{" "}
@@ -278,28 +278,26 @@ export function Notifications() {
               </div>
               <div>
                 <div className="row__title">
-                  Tailarr app self-config{" "}
+                  Tailarr app auto-setup{" "}
                   <span
                     className={
                       "chip" + (status.gateway ? " chip--installed" : " chip--danger")
                     }
                   >
-                    {status.gateway ? "gateway running" : "gateway missing"}
+                    {status.gateway ? "working" : "not running"}
                   </span>
                 </div>
                 <div className="row__meta">
                   {status.gateway ? (
                     <>
-                      User devices fetch their own notification config from
-                      the <code>tailarr-gate</code> node — nothing to hand
-                      out for Tailarr-app users.
+                      Tailarr-app users get their notification setup
+                      automatically — nothing to hand out.
                     </>
                   ) : (
                     <>
-                      The self-config gateway is not deployed, so the
-                      Tailarr app’s Automatic Setup will fail —{" "}
-                      <strong>Re-run setup</strong> to deploy it (requires
-                      controller v0.22.1+).
+                      Automatic setup for the Tailarr app isn’t available
+                      yet — <strong>Re-run setup</strong> to turn it on
+                      (requires controller v0.22.1+).
                     </>
                   )}
                 </div>

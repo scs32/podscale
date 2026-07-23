@@ -49,17 +49,22 @@ export function FolderEditor({
     <FormSection title="Folders">
       {rows.length > 0 && (
         <p className="field__hint" style={{ margin: "0 0 var(--sp-2)" }}>
-          Host path → path inside the container.
+          Pick the host folder with the browse button → path inside the
+          container.
         </p>
       )}
       {rows.map((r, i) => (
         <div className="folder-row" key={i}>
+          {/* Browse-only on purpose: typed host paths are the easiest way
+              to end up with an empty mount ("folder not found on host") —
+              the browser can only pick or create folders that exist. */}
           <input
             className="input"
             value={r.host}
-            placeholder="/host/path"
+            placeholder="browse for a host folder…"
             aria-label="Host path"
-            onChange={(e) => set(i, { host: e.target.value })}
+            readOnly
+            title="Use the folder button to browse the host (new folders can be created there)"
           />
           <FolderBrowser value={r.host} onPick={(p) => set(i, { host: p })} />
           <span className="folder-row__arrow">→</span>
